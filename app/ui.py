@@ -108,6 +108,16 @@ class Dashboard(QWidget):
         self.build()
 
     def build(self):
+        root = self.layout()
+        if root is None:
+            root = QVBoxLayout(self)
+        else:
+            while root.count():
+                item = root.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+
         conn = connect()
         project = conn.execute(
             "SELECT * FROM project WHERE id=1"
@@ -129,7 +139,6 @@ class Dashboard(QWidget):
         ).fetchall()
         conn.close()
 
-        root = QVBoxLayout(self)
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(14)
 

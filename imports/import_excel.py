@@ -132,9 +132,15 @@ def import_workbook(path):
     metrics = _parse_summary_metrics(workbook)
 
     conn = connect()
-    conn.execute("DELETE FROM project WHERE id=1")
     conn.execute(
-        "INSERT INTO project(id, name, code, contract_value, period_label, status) VALUES (1, ?, ?, ?, ?, ?)",
+        """
+        INSERT INTO project(id, name, code, contract_value, period_label, status)
+        VALUES (1, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name=excluded.name,
+            period_label=excluded.period_label,
+            status=excluded.status
+        """,
         (
             metadata["name"],
             "MB-1405-01",

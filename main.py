@@ -1,8 +1,23 @@
 import sys
-from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QHBoxLayout, QListWidget, QLabel, QStackedWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QListWidget,
+    QMainWindow,
+    QStackedWidget,
+    QWidget,
+)
 from PySide6.QtCore import Qt
 from app.db import seed
 from app.ui import Dashboard, NAVY, BG, TEXT
+from app.modules import (
+    ActivityPage,
+    FinancePage,
+    ReportsPage,
+    ResourcePage,
+    RiskPage,
+    SettingsPage,
+)
 
 
 class MainWindow(QMainWindow):
@@ -44,30 +59,35 @@ class MainWindow(QMainWindow):
         )
 
         stack = QStackedWidget()
-        stack.addWidget(Dashboard())
-
-        for name in [
-            "برنامه اجرایی",
-            "پیشرفت فیزیکی",
-            "درآمد و هزینه",
-            "منابع و ماشین‌آلات",
-            "نیروی انسانی",
-            "مصالح و انبار",
-            "ریسک و اقدامات اصلاحی",
-            "گزارش‌ها",
-            "تنظیمات",
-        ]:
-            widget = QLabel(f"{name}\n\nاین ماژول در نسخه بعدی فعال می‌شود.")
-            widget.setAlignment(Qt.AlignCenter)
-            widget.setStyleSheet("font-size:20px;color:#6B7C8F;")
-            stack.addWidget(widget)
+        self.stack = stack
+        self.dashboard = Dashboard()
+        stack.addWidget(self.dashboard)
+        stack.addWidget(ActivityPage("برنامه اجرایی"))
+        stack.addWidget(ActivityPage("پیشرفت فیزیکی", progress_only=True))
+        stack.addWidget(FinancePage())
+        stack.addWidget(ResourcePage("منابع و ماشین‌آلات", "ماشین‌آلات"))
+        stack.addWidget(ResourcePage("نیروی انسانی", "نیروی انسانی"))
+        stack.addWidget(ResourcePage("مصالح و انبار", "مصالح"))
+        stack.addWidget(RiskPage())
+        stack.addWidget(ReportsPage())
+        stack.addWidget(SettingsPage(self.refresh_data))
 
         side.currentRowChanged.connect(stack.setCurrentIndex)
+        side.currentRowChanged.connect(self.refresh_dashboard_if_selected)
         side.setCurrentRow(0)
 
         lay.addWidget(side)
         lay.addWidget(stack)
         self.setCentralWidget(root)
+
+    def refresh_data(self):
+        self.dashboard.build()
+        finance = self.stack.widget(3)
+        finance.refresh()
+
+    def refresh_dashboard_if_selected(self, index):
+        if index == 0:
+            self.dashboard.build()
 
 
 if __name__ == "__main__":
