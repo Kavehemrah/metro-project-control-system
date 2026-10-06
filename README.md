@@ -1,34 +1,88 @@
 # Metro Project Control System
 
-نسخه اولیه سیستم کنترل پروژه مترو بر پایه Python + PySide6 + SQLite.
+سیستم کنترل پروژه مترو بر پایه Python + PySide6 + SQLite، با هدف تبدیل منطق فایل Excel پروژه به یک مدل واقعی کنترل پروژه.
 
-## Version 0.1
-- RTL management dashboard
-- SQLite data layer
-- Project KPI dashboard
-- Initial Excel import module
-- Seed data based on the Baharestan metro operational plan
+## منطق اصلی
 
-## Modules
-- Operational plan: create, edit, and remove activities.
-- Physical progress: update progress percentage, delay, and status for an activity.
-- Finance: view monthly revenue, cost, and balances.
-- Resources, workforce, and materials: manage required and available amounts.
-- Risks: manage probability, impact, controls, corrective actions, and calculated score.
-- Reports: export activity, resource, and risk tables to Excel-compatible CSV files.
-- Settings: import project name, reporting period, and financial KPIs from an Excel workbook.
+مدل نرم‌افزار بر اساس زنجیره واقعی فایل پروژه ساخته شده است:
 
-The current Excel importer does not import activity, resource, or risk rows. Those
-records are managed separately in their respective modules. Initial activity,
-resource, and risk entries are starter data and should be verified before use.
+برنامه عملیاتی → پیشرفت فیزیکی → درآمد → هزینه → بالانس مالی
 
-Import an Excel workbook from the project root with:
-```bash
-python -m imports.import_excel "metro-project-control-system.xlsx"
-```
+و در کنار آن:
 
-## Run
+برنامه → منابع / ماشین‌آلات / نیروی انسانی / مصالح
+
+ریسک → اقدام اصلاحی
+
+پیشرفت فعالیت از روی عملکرد واقعی محاسبه می‌شود و یک مقدار دستی و مستقل نیست.
+
+## مدل برنامه و پیشرفت
+
+هر فعالیت دارای اطلاعات پایه زیر است:
+- موقعیت
+- جبهه کاری
+- شرح فعالیت
+- حجم کل
+- حجم باقی‌مانده
+- واحد
+- شروع / پایان
+- مدت
+- برنامه روزانه
+- برنامه دوره
+- عملکرد واقعی
+- پیشرفت
+- تأخیر
+- وضعیت
+
+برای کنترل واقعی، دو سطح ثبت عملکرد وجود دارد:
+- activity_daily_plan: برنامه روزانه
+- activity_daily_actual: عملکرد واقعی روزانه
+- activity_period: برنامه/عملکرد دوره‌ای مطابق شیت پیشرفت فیزیکی
+
+بنابراین کنترل اصلی به صورت Planned / Actual / Variance / Achievement انجام می‌شود.
+
+## Excel Import
+
+فایل اصلی پروژه در ریشه مخزن قرار دارد:
+metro-project-control-system.xlsx
+
+Import فعلی این بخش‌ها را از Excel می‌خواند:
+- اطلاعات پروژه و دوره گزارش
+- KPI و درآمد/هزینه خلاصه
+- شیت «برنامه عملیاتی»
+- شیت «پيشرفت فيزيكي»
+- برنامه روزانه در صورت وجود تاریخ در سربرگ ستون‌ها
+- عملکرد دوره‌ای و مقدار تجمعی
+- هزینه تفصیلی برای کنترل مغایرت با خلاصه
+- فرمول‌های دارای #REF!
+
+مغایرت‌های کشف‌شده به جدول discrepancy وارد می‌شوند تا در داشبورد قابل کنترل باشند.
+
+## کنترل مالی
+
+درآمد، هزینه و بالانس به صورت جداگانه نگهداری می‌شوند. اختلاف هزینه خلاصه و هزینه تفصیلی نیز به عنوان مغایرت کنترل می‌شود؛ بنابراین اختلاف شناخته‌شده حدود 12.33 میلیارد ریال در فایل Excel نباید در نرم‌افزار پنهان شود.
+
+## اجرا
+
 ```bash
 python -m pip install -r requirements.txt
 python main.py
 ```
+
+ورود دستی Excel:
+
+```bash
+python -m imports.import_excel "metro-project-control-system.xlsx"
+```
+
+## وضعیت توسعه
+
+شاخه فعلی برای توسعه منطق کنترل پروژه استفاده می‌شود و هنوز نباید به main merge شود.
+
+مرحله بعدی توسعه:
+1. تکمیل ورود برنامه و عملکرد روزانه
+2. محاسبه تأخیر و Forecast Finish
+3. اتصال پیشرفت به درآمد
+4. ورود تفصیلی هزینه‌ها و منابع
+5. کنترل مصالح، ماشین‌آلات و نیروی انسانی بر مبنای برنامه
+6. What-if و داشبورد مدیریتی نهایی
