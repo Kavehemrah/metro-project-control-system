@@ -383,6 +383,24 @@ class ActivityPage(RecordPage):
                     self.project_id,
                 ),
             )
+
+            project_totals = conn.execute(
+                """
+                SELECT COALESCE(SUM(quantity),0) total_qty,
+                       COALESCE(SUM(actual_qty),0) actual_qty
+                FROM activity
+                WHERE project_id=?
+                """,
+                (self.project_id,),
+            ).fetchone()
+            project_progress = (
+                project_totals["actual_qty"] / project_totals["total_qty"]
+                if project_totals["total_qty"] else 0
+            )
+            conn.execute(
+                "UPDATE kpi SET physical_progress=? WHERE project_id=?",
+                (project_progress, self.project_id),
+            )
             conn.commit()
         finally:
             conn.close()
