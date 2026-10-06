@@ -315,25 +315,42 @@ class ActivityPage(RecordPage):
         self.refresh()
 
     def refresh(self):
-        super().refresh()
-        for row_index, record in enumerate(self.records):
-            conn = connect()
-            try:
+        conn = connect()
+        try:
+            self.records = conn.execute(
+                self.query,
+                (self.project_id, *self.query_params),
+            ).fetchall()
+
+            self.table.setRowCount(len(self.records))
+            for row_index, record in enumerate(self.records):
                 control = activity_control(conn, record["id"])
-            finally:
-                conn.close()
-
-            self.table.item(row_index, 10).setText(f"{control['planned_qty']:,.2f}")
-            self.table.item(row_index, 11).setText(f"{control['actual_qty']:,.2f}")
-            self.table.item(row_index, 12).setText(f"{control['variance_qty']:,.2f}")
-            self.table.item(row_index, 13).setText(f"{control['achievement_pct']:.1f}%")
-            self.table.item(row_index, 14).setText(f"{control['physical_progress_pct']:.1f}%")
-
-            if self.progress_only:
-                # Progress is derived from actual quantities; do not expose it as a free input.
-                self.table.item(row_index, 14).setText(
-                    f"{control['physical_progress_pct']:.1f}%"
-                )
+                display_values = [
+                    record["row_no"],
+                    record["position"],
+                    record["zone"],
+                    record["title"],
+                    f"{record['quantity'] or 0:,.2f}",
+                    f"{record['remaining_qty'] or 0:,.2f}",
+                    record["unit"],
+                    record["start_date"],
+                    record["finish_date"],
+                    f"{record['daily_target'] or 0:,.2f}",
+                    f"{control['planned_qty']:,.2f}",
+                    f"{control['actual_qty']:,.2f}",
+                    f"{control['variance_qty']:,.2f}",
+                    f"{control['achievement_pct']:.1f}%",
+                    f"{control['physical_progress_pct']:.1f}%",
+                    f"{record['delay_days'] or 0} روز",
+                    record["status"],
+                ]
+                for column_index, value in enumerate(display_values):
+                    item = QTableWidgetItem(str(value if value is not None else ""))
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    self.table.setItem(row_index, column_index, item)
+        finally:
+            conn.close()
+        self.table.resizeColumnsToContents()
 
     def _record_actual(self, record):
         fields = [
