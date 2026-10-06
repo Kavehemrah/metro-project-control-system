@@ -252,11 +252,16 @@ class RecordPage(QWidget):
 
 
 ACTIVITY_FIELDS = [
+    ("position", "موقعیت", "text", {}),
+    ("zone", "جبهه کاری", "text", {}),
     ("title", "شرح فعالیت", "text", {}),
-    ("zone", "موقعیت / جبهه", "text", {}),
-    ("quantity", "حجم", "number", {"minimum": 0, "decimals": 2}),
+    ("quantity", "حجم کل", "number", {"minimum": 0, "decimals": 2}),
+    ("remaining_qty", "حجم باقی‌مانده", "number", {"minimum": 0, "decimals": 2}),
     ("unit", "واحد", "text", {}),
-    ("progress", "پیشرفت", "percent", {"minimum": 0, "maximum": 100}),
+    ("start_date", "شروع", "text", {}),
+    ("finish_date", "پایان", "text", {}),
+    ("duration_days", "مدت (روز)", "integer", {"minimum": 0, "maximum": 36500}),
+    ("daily_target", "برنامه روزانه", "number", {"minimum": 0, "decimals": 2}),
     ("delay_days", "تأخیر (روز)", "integer", {"minimum": 0, "maximum": 36500}),
     (
         "status",
@@ -270,77 +275,153 @@ ACTIVITY_FIELDS = [
 class ActivityPage(RecordPage):
     def __init__(self, title, progress_only=False):
         self.progress_only = progress_only
+        query = (
+            "SELECT * FROM activity WHERE project_id=? "
+            "ORDER BY delay_days DESC, row_no"
+        )
+        columns = [
+            ("row_no", "ردیف", None),
+            ("position", "موقعیت", None),
+            ("zone", "جبهه", None),
+            ("title", "فعالیت", None),
+            ("quantity", "حجم کل", lambda v, _r: f"{v or 0:,.2f}"),
+            ("remaining_qty", "باقی‌مانده", lambda v, _r: f"{v or 0:,.2f}"),
+            ("unit", "واحد", None),
+            ("start_date", "شروع", None),
+            ("finish_date", "پایان", None),
+            ("daily_target", "برنامه روزانه", lambda v, _r: f"{v or 0:,.2f}"),
+            ("planned_qty", "برنامه دوره", lambda v, _r: f"{v or 0:,.2f}"),
+            ("actual_qty", "عملکرد", lambda v, _r: f"{v or 0:,.2f}"),
+            ("progress", "پیشرفت", lambda v, _r: f"{(v or 0) * 100:.1f}%"),
+            ("delay_days", "تأخیر", lambda v, _r: f"{v or 0} روز"),
+            ("status", "وضعیت", None),
+        ]
         super().__init__(
             title,
-            "SELECT * FROM activity WHERE project_id=? ORDER BY delay_days DESC, row_no",
-            [
-                ("row_no", "ردیف", None),
-                ("title", "فعالیت", None),
-                ("zone", "جبهه", None),
-                ("quantity", "حجم", lambda value, _record: f"{value:,.2f}"),
-                ("unit", "واحد", None),
-                ("progress", "پیشرفت", lambda value, _record: f"{value * 100:.1f}%"),
-                ("delay_days", "تأخیر (روز)", None),
-                ("status", "وضعیت", None),
-            ],
+            query,
+            columns,
             ACTIVITY_FIELDS,
             "activity",
         )
         if progress_only:
-            self.add_button.setText("راهنما")
-            self.edit_button.setText("ثبت/ویرایش پیشرفت")
+            self.add_button.setText("ثبت عملکرد روزانه")
+            self.edit_button.setText("ثبت عملکرد")
+            self.delete_button.setText("حذف عملکرد")
+        else:
+            self.add_button.setText("افزودن فعالیت")
+        self.refresh()
 
-    def prepare_values(self, values):
-        return values
-
-    def _dialog(self, title, initial=None):
+    def refresh(self):
+        super().refresh()
         if self.progress_only:
-            fields = [
-                ("progress", "پیشرفت (%)", "percent", {"minimum": 0, "maximum": 100}),
-                ("delay_days", "تأخیر (روز)", "integer", {"minimum": 0, "maximum": 36500}),
-                ("status", "وضعیت", "choice", {"choices": ["NORMAL", "WARNING", "CRITICAL"]}),
-            ]
-            initial = initial or {}
-            initial = {key: initial.get(key) for key in ("progress", "delay_days", "status")}
-            return self._run_custom_dialog(title, fields, initial)
-        return super()._dialog(title, initial)
-
-    def _run_custom_dialog(self, title, fields, initial):
-        dialog = RecordDialog(title, fields, initial, self)
-        if dialog.exec() != QDialog.Accepted:
-            return None
-        return dialog.values()
-
-    def _save_values(self, values, record_id=None):
-        if record_id is None and not self.progress_only:
-            values["row_no"] = max((row["row_no"] or 0 for row in self.records), default=0) + 1
-        if self.progress_only and record_id is not None:
-            conn = connect()
-            try:
-                conn.execute(
-                    "UPDATE activity SET progress=?, delay_days=?, status=? WHERE id=? AND project_id=?",
-                    (
-                        values["progress"],
-                        values["delay_days"],
-                        values["status"],
-                        record_id,
-                        self.project_id,
-                    ),
+            # Progress is derived from actual quantities; do not expose it as a free input.
+            for row_index, record in enumerate(self.records):
+                self.table.item(row_index, 12).setText(
+                    f"{(record['progress'] or 0) * 100:.1f}%"
                 )
-                conn.commit()
-            finally:
-                conn.close()
-            self.refresh()
+
+    def _record_actual(self, record):
+        fields = [
+            ("actual_date", "تاریخ عملکرد", "text", {}),
+            ("quantity", f"مقدار عملکرد ({record['unit'] or ''})", "number", {"minimum": 0, "decimals": 2}),
+            ("notes", "توضیحات", "text", {}),
+        ]
+        dialog = RecordDialog("ثبت عملکرد روزانه", fields, {}, self)
+        if dialog.exec() != QDialog.Accepted:
             return
-        super()._save_values(values, record_id)
+
+        values = dialog.values()
+        if not values["actual_date"] or values["quantity"] <= 0:
+            QMessageBox.warning(self, "ورودی ناقص", "تاریخ و مقدار عملکرد الزامی است.")
+            return
+
+        conn = connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO activity_daily_actual(activity_id, actual_date, quantity, source, notes)
+                VALUES(?, ?, ?, 'MANUAL', ?)
+                ON CONFLICT(activity_id, actual_date) DO UPDATE SET
+                    quantity=excluded.quantity,
+                    notes=excluded.notes
+                """,
+                (record["id"], values["actual_date"], values["quantity"], values["notes"]),
+            )
+
+            totals = conn.execute(
+                """
+                SELECT
+                    COALESCE((SELECT SUM(quantity) FROM activity_daily_plan WHERE activity_id=?),0) planned,
+                    COALESCE((SELECT SUM(quantity) FROM activity_daily_actual WHERE activity_id=?),0) actual
+                """,
+                (record["id"], record["id"]),
+            ).fetchone()
+            actual = float(totals["actual"] or 0)
+            total = float(record["quantity"] or 0)
+            planned = float(totals["planned"] or 0)
+            progress = actual / total if total else 0
+            achievement = actual / planned * 100 if planned else 0
+
+            conn.execute(
+                """
+                UPDATE activity
+                SET actual_qty=?, planned_qty=?, progress=?,
+                    status=CASE
+                        WHEN ? >= 100 THEN 'NORMAL'
+                        WHEN ? >= 90 THEN 'WARNING'
+                        ELSE 'CRITICAL'
+                    END
+                WHERE id=? AND project_id=?
+                """,
+                (
+                    actual,
+                    planned,
+                    progress,
+                    achievement,
+                    achievement,
+                    record["id"],
+                    self.project_id,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self.refresh()
 
     def add_record(self):
         if self.progress_only:
-            QMessageBox.information(
-                self, "ثبت پیشرفت", "برای ثبت پیشرفت، یک فعالیت را انتخاب کنید و «ویرایش» را بزنید."
-            )
+            record = self._selected_record()
+            if record:
+                self._record_actual(record)
             return
         super().add_record()
+
+    def edit_record(self):
+        if self.progress_only:
+            record = self._selected_record()
+            if record:
+                self._record_actual(record)
+            return
+        super().edit_record()
+
+    def delete_record(self):
+        if not self.progress_only:
+            super().delete_record()
+            return
+        record = self._selected_record()
+        if not record:
+            return
+        conn = connect()
+        try:
+            conn.execute("DELETE FROM activity_daily_actual WHERE activity_id=?", (record["id"],))
+            conn.execute(
+                "UPDATE activity SET actual_qty=0, progress=0, status='NORMAL' WHERE id=? AND project_id=?",
+                (record["id"], self.project_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self.refresh()
 
 
 RESOURCE_FIELDS = [
