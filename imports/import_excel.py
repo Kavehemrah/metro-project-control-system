@@ -477,6 +477,8 @@ def import_workbook(path):
                 (month_name, revenue, cost),
             )
 
+        conn.execute("DELETE FROM discrepancy WHERE project_id=1")
+
         # Do not destroy the existing model when a workbook layout cannot be parsed.
         if operational:
             conn.execute("DELETE FROM activity WHERE project_id=1")
@@ -492,7 +494,6 @@ def import_workbook(path):
                 ),
             )
 
-        conn.execute("DELETE FROM discrepancy WHERE project_id=1")
         discrepancy = detect_finance_discrepancy(metrics["cost"], detail_cost)
         if discrepancy:
             conn.execute(
