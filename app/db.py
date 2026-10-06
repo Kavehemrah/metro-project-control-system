@@ -80,6 +80,20 @@ CREATE TABLE IF NOT EXISTS activity_daily_actual (
     UNIQUE(activity_id, actual_date)
 );
 
+CREATE TABLE IF NOT EXISTS activity_period (
+    id INTEGER PRIMARY KEY,
+    activity_id INTEGER NOT NULL,
+    period TEXT NOT NULL,
+    planned_qty REAL DEFAULT 0,
+    actual_qty REAL DEFAULT 0,
+    cumulative_qty REAL DEFAULT 0,
+    remaining_qty REAL DEFAULT 0,
+    achievement_pct REAL DEFAULT 0,
+    source TEXT DEFAULT 'EXCEL',
+    FOREIGN KEY(activity_id) REFERENCES activity(id) ON DELETE CASCADE,
+    UNIQUE(activity_id, period)
+);
+
 CREATE TABLE IF NOT EXISTS revenue_entry (
     id INTEGER PRIMARY KEY,
     project_id INTEGER NOT NULL,
