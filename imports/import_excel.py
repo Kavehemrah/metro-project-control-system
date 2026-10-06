@@ -477,10 +477,20 @@ def import_workbook(path):
                 (month_name, revenue, cost),
             )
 
-        # Imported Excel data is authoritative for the imported activity set.
-        conn.execute("DELETE FROM activity WHERE project_id=1")
-        for index, item in enumerate(operational, start=1):
-            _upsert_activity(conn, item, physical, index)
+        # Do not destroy the existing model when a workbook layout cannot be parsed.
+        if operational:
+            conn.execute("DELETE FROM activity WHERE project_id=1")
+            for index, item in enumerate(operational, start=1):
+                _upsert_activity(conn, item, physical, index)
+        else:
+            conn.execute(
+                "INSERT INTO discrepancy(project_id,title,detail,severity) VALUES(1,?,?,?)",
+                (
+                    "ورود برنامه عملیاتی انجام نشد",
+                    "ساختار شیت «برنامه عملیاتی» شناسایی نشد؛ داده‌های فعالیت قبلی حفظ شدند.",
+                    "HIGH",
+                ),
+            )
 
         conn.execute("DELETE FROM discrepancy WHERE project_id=1")
         discrepancy = detect_finance_discrepancy(metrics["cost"], detail_cost)
