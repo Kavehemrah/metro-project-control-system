@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
 )
 from .db import connect
+from .services.control import aggregate_activity_control
 
 NAVY = "#102A43"
 BLUE = "#1677D2"
@@ -126,10 +127,10 @@ class Dashboard(QWidget):
             "SELECT * FROM kpi WHERE project_id=1"
         ).fetchone()
         months = conn.execute(
-            "SELECT * FROM monthly_finance WHERE project_id=1"
+            "SELECT * FROM monthly_finance WHERE project_id=1 ORDER BY id"
         ).fetchall()
         activities = conn.execute(
-            "SELECT * FROM activity WHERE project_id=1 ORDER BY delay_days DESC"
+            "SELECT * FROM activity WHERE project_id=1 ORDER BY delay_days DESC, row_no"
         ).fetchall()
         risks = conn.execute(
             "SELECT * FROM risk WHERE project_id=1 ORDER BY score DESC"
@@ -138,6 +139,13 @@ class Dashboard(QWidget):
             "SELECT * FROM discrepancy WHERE project_id=1"
         ).fetchall()
         conn.close()
+
+        controls = aggregate_activity_control(connect(), 1)
+        total_qty = sum(item["quantity"] for item in controls)
+        total_planned = sum(item["planned_qty"] for item in controls)
+        total_actual = sum(item["actual_qty"] for item in controls)
+        physical_actual = total_actual / total_qty if total_qty else (kpi["physical_progress"] if kpi else 0)
+        physical_planned = total_planned / total_qty if total_qty else physical_actual
 
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(14)
@@ -159,7 +167,7 @@ class Dashboard(QWidget):
         cards.addWidget(
             card(
                 "پیشرفت فیزیکی",
-                f"{kpi['physical_progress'] * 100:.2f}%",
+                f"{physical_actual * 100:.2f}%",
                 "برنامه دوماهه",
                 BLUE,
             )
@@ -193,16 +201,16 @@ class Dashboard(QWidget):
         charts = QHBoxLayout()
         charts.addWidget(
             MiniChart(
-                [6.54, 14.26, 16.8],
-                ["مهر", "آبان", "هدف"],
-                "پیشرفت / عملکرد / پیش‌بینی",
+                [physical_planned * 100, physical_actual * 100],
+                ["برنامه", "عملکرد"],
+                "برنامه در برابر عملکرد",
             )
         )
         charts.addWidget(
             MiniChart(
-                [324.2, 355.0],
-                ["مهر", "آبان"],
-                "درآمد دو ماهه (میلیارد ریال)",
+                [month["revenue"] / 1e9 for month in months] or [0],
+                [str(month["month"]) for month in months] or ["-"],
+                "درآمد دوره‌ها (میلیارد ریال)",
             )
         )
         root.addLayout(charts)
