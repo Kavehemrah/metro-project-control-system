@@ -311,14 +311,21 @@ def _parse_detail_cost(workbook):
         return 0.0
 
     candidates = []
+    fallback = []
     for row in sheet.iter_rows(values_only=True):
         text = _row_text(row)
         if "جمع" not in text:
             continue
         numeric = [_clean_number(v) for v in row if isinstance(v, (int, float))]
-        if numeric:
-            candidates.append(max(numeric))
-    return max(candidates) if candidates else 0.0
+        if not numeric:
+            continue
+        value = max(numeric)
+        fallback.append(value)
+        if "هزینه" in text or "هزينه" in text:
+            candidates.append(value)
+    if candidates:
+        return max(candidates)
+    return max(fallback) if fallback else 0.0
 
 
 def _upsert_activity(conn, item, physical, row_no):
