@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from .db import connect
+from .services.control import activity_control
 from .ui import BLUE, MUTED, TEXT
 
 
@@ -292,6 +293,8 @@ class ActivityPage(RecordPage):
             ("daily_target", "برنامه روزانه", lambda v, _r: f"{v or 0:,.2f}"),
             ("planned_qty", "برنامه دوره", lambda v, _r: f"{v or 0:,.2f}"),
             ("actual_qty", "عملکرد", lambda v, _r: f"{v or 0:,.2f}"),
+            ("variance_qty", "انحراف", lambda v, _r: f"{v or 0:,.2f}"),
+            ("achievement_pct", "تحقق", lambda v, _r: f"{v or 0:.1f}%"),
             ("progress", "پیشرفت", lambda v, _r: f"{(v or 0) * 100:.1f}%"),
             ("delay_days", "تأخیر", lambda v, _r: f"{v or 0} روز"),
             ("status", "وضعیت", None),
@@ -313,11 +316,23 @@ class ActivityPage(RecordPage):
 
     def refresh(self):
         super().refresh()
-        if self.progress_only:
-            # Progress is derived from actual quantities; do not expose it as a free input.
-            for row_index, record in enumerate(self.records):
-                self.table.item(row_index, 12).setText(
-                    f"{(record['progress'] or 0) * 100:.1f}%"
+        for row_index, record in enumerate(self.records):
+            conn = connect()
+            try:
+                control = activity_control(conn, record["id"])
+            finally:
+                conn.close()
+
+            self.table.item(row_index, 10).setText(f"{control['planned_qty']:,.2f}")
+            self.table.item(row_index, 11).setText(f"{control['actual_qty']:,.2f}")
+            self.table.item(row_index, 12).setText(f"{control['variance_qty']:,.2f}")
+            self.table.item(row_index, 13).setText(f"{control['achievement_pct']:.1f}%")
+            self.table.item(row_index, 14).setText(f"{control['physical_progress_pct']:.1f}%")
+
+            if self.progress_only:
+                # Progress is derived from actual quantities; do not expose it as a free input.
+                self.table.item(row_index, 14).setText(
+                    f"{control['physical_progress_pct']:.1f}%"
                 )
 
     def _record_actual(self, record):
