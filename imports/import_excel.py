@@ -10,7 +10,9 @@ from app.services.control import detect_finance_discrepancy, scan_formula_errors
 
 
 def _clean_text(value) -> str:
-    return "" if value is None else str(value).strip()
+    if value is None:
+        return ""
+    return str(value).replace("\u200c", " ").replace("\n", " ").strip()
 
 
 def _clean_number(value) -> float:
