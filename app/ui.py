@@ -138,9 +138,9 @@ class Dashboard(QWidget):
         discrepancies = conn.execute(
             "SELECT * FROM discrepancy WHERE project_id=1"
         ).fetchall()
+        controls = aggregate_activity_control(conn, 1)
         conn.close()
 
-        controls = aggregate_activity_control(connect(), 1)
         total_qty = sum(item["quantity"] for item in controls)
         total_planned = sum(item["planned_qty"] for item in controls)
         total_actual = sum(item["actual_qty"] for item in controls)
