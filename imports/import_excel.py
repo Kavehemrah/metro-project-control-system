@@ -49,10 +49,11 @@ def _find_columns(sheet, header_row, aliases):
         value = _clean_text(sheet.cell(header_row, col).value)
         if not value:
             continue
+        normalized_value = _normal_key(value)
         for key, words in aliases.items():
             if key in columns:
                 continue
-            if any(word in value for word in words):
+            if any(_normal_key(word) in normalized_value for word in words):
                 columns[key] = col
     return columns
 
@@ -193,8 +194,9 @@ def _parse_physical_progress(workbook):
     )
 
     month_columns = []
+    period_header_row = min(sheet.max_row, header_row + 1)
     for col in range(1, sheet.max_column + 1):
-        label = _clean_text(sheet.cell(header_row, col).value)
+        label = _clean_text(sheet.cell(period_header_row, col).value)
         if any(month in label for month in ["مهر", "آبان", "شهریور", "آذر", "دی", "بهمن", "اسفند"]):
             month_columns.append((col, label))
 
