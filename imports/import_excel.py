@@ -339,6 +339,108 @@ def _parse_detail_cost(workbook):
     return max(fallback) if fallback else 0.0
 
 
+def _parse_financial_entries(workbook):
+    sheet = workbook["خلاصه گزارش"] if "خلاصه گزارش" in workbook.sheetnames else None
+    if sheet is None:
+        return {"revenue": [], "cost": []}
+
+    revenue_entries = []
+    cost_entries = []
+
+    for row_no in range(7, 12):
+        label = _clean_text(sheet.cell(row_no, 2).value)
+        if not label:
+            continue
+        for col_no in range(3, 6):
+            period = _clean_text(sheet.cell(3, col_no).value)
+            amount = _clean_number(sheet.cell(row_no, col_no).value)
+            if amount:
+                revenue_entries.append({
+                    "category": label,
+                    "period": period or "مجموع",
+                    "amount": amount,
+                })
+
+    for row_no in range(14, 35):
+        label = _clean_text(sheet.cell(row_no, 2).value)
+        if not label:
+            continue
+        for col_no in range(3, 6):
+            period = _clean_text(sheet.cell(3, col_no).value)
+            amount = _clean_number(sheet.cell(row_no, col_no).value)
+            if amount:
+                cost_entries.append({
+                    "category": label,
+                    "period": period or "مجموع",
+                    "amount": amount,
+                })
+
+    return {"revenue": revenue_entries, "cost": cost_entries}
+
+
+def _matches_any(text: str, candidates: list[str]) -> bool:
+    normalized_text = _normal_key(text)
+    normalized_candidates = {_normal_key(candidate) for candidate in candidates}
+    return any(candidate in normalized_text for candidate in normalized_candidates)
+
+
+def _resource_category_for_sheet(title: str) -> str | None:
+    if _matches_any(title, ["ماشین", "ماشين", "دستگاه", "ماشین آلات", "ماشين الات", "ماشینالات"]):
+        return "ماشین‌آلات"
+    if _matches_any(title, ["نیروی", "نيروي", "انسانی", "انساني", "پرسنل", "شغل"]):
+        return "نیروی انسانی"
+    if _matches_any(title, ["مواد", "مصالح", "ماده", "مواد و مصالح", "مصالح اصلی"]):
+        return "مصالح"
+    return None
+
+
+def _parse_resources(workbook):
+    resources = []
+    seen = set()
+
+    for sheet in workbook.worksheets:
+        category = _resource_category_for_sheet(sheet.title)
+        if category is None:
+            continue
+
+        for row in sheet.iter_rows(min_row=3, max_row=sheet.max_row):
+            values = [_clean_text(cell.value) for cell in row[:6]]
+            if not any(values):
+                continue
+            if any(keyword in _normal_key(values[0]) for keyword in ["رديف", "ردیف", "سطر"]) and len(values) > 1:
+                continue
+
+            title = values[1] if len(values) > 1 else ""
+            if not title:
+                continue
+            title_key = _normal_key(title)
+            if title_key in {"ماشینآلات", "نيرويانسانی", "موادومصالحاصلی", "موادومصالح", "دستگاه", "نیرویانسانی"}:
+                continue
+
+            unit = values[2] if len(values) > 2 else ""
+            required = _clean_number(values[3] if len(values) > 3 else 0)
+            available = _clean_number(values[4] if len(values) > 4 else 0)
+
+            if not title or (required == 0 and available == 0 and not unit):
+                continue
+
+            key = (category, title)
+            if key in seen:
+                continue
+            seen.add(key)
+            resources.append(
+                {
+                    "category": category,
+                    "title": title,
+                    "required": required,
+                    "available": available,
+                    "unit": unit,
+                }
+            )
+
+    return resources
+
+
 def _upsert_activity(conn, item, physical, row_no):
     key = (_normal_key(item["zone"]), _normal_key(item["title"]))
     p = physical.get(key, {})
@@ -351,10 +453,22 @@ def _upsert_activity(conn, item, physical, row_no):
     if total <= 0:
         total = remaining + actual_total
 
-    existing = conn.execute(
-        "SELECT id FROM activity WHERE project_id=1 AND title=? AND zone=?",
-        (item["title"], item["zone"]),
-    ).fetchone()
+    existing = None
+    if item.get("row_no"):
+        existing = conn.execute(
+            "SELECT id FROM activity WHERE project_id=1 AND row_no=?",
+            (item["row_no"],),
+        ).fetchone()
+    else:
+        existing = conn.execute(
+            "SELECT id FROM activity WHERE project_id=1 AND title=? AND zone=? AND position=?",
+            (item["title"], item["zone"], item["position"]),
+        ).fetchone()
+        if existing is None:
+            existing = conn.execute(
+                "SELECT id FROM activity WHERE project_id=1 AND title=? AND zone=?",
+                (item["title"], item["zone"]),
+            ).fetchone()
 
     values = (
         item["position"],
@@ -448,6 +562,8 @@ def import_workbook(path):
     physical = _parse_physical_progress(workbook_values)
     operational = _parse_operational_plan(workbook_values)
     detail_cost = _parse_detail_cost(workbook_values)
+    resources = _parse_resources(workbook_values)
+    financial_entries = _parse_financial_entries(workbook_values)
     formula_errors = scan_formula_errors(workbook_formulas)
 
     conn = connect()
@@ -489,12 +605,36 @@ def import_workbook(path):
             )
 
         conn.execute("DELETE FROM discrepancy WHERE project_id=1")
+        conn.execute("DELETE FROM resource WHERE project_id=1")
+        conn.execute("DELETE FROM revenue_entry WHERE project_id=1")
+        conn.execute("DELETE FROM cost_entry WHERE project_id=1")
+        conn.execute("DELETE FROM activity_dependency WHERE project_id=1")
+
+        for item in resources:
+            conn.execute(
+                "INSERT INTO resource(project_id, category, title, required, available, unit) VALUES(1,?,?,?,?,?)",
+                (item["category"], item["title"], item["required"], item["available"], item["unit"]),
+            )
+
+        for entry in financial_entries["revenue"]:
+            conn.execute(
+                "INSERT INTO revenue_entry(project_id, activity_id, period, category, amount, source) VALUES(1, NULL, ?, ?, ?, 'EXCEL')",
+                (entry["period"], entry["category"], entry["amount"]),
+            )
+
+        for entry in financial_entries["cost"]:
+            conn.execute(
+                "INSERT INTO cost_entry(project_id, activity_id, period, category, amount, source) VALUES(1, NULL, ?, ?, ?, 'EXCEL')",
+                (entry["period"], entry["category"], entry["amount"]),
+            )
 
         # Do not destroy the existing model when a workbook layout cannot be parsed.
         if operational:
             conn.execute("DELETE FROM activity WHERE project_id=1")
-            for index, item in enumerate(operational, start=1):
-                _upsert_activity(conn, item, physical, index)
+            for item in operational:
+                _upsert_activity(conn, item, physical, item["row_no"])
+            infer_activity_dependencies = __import__('app.services.control', fromlist=['infer_activity_dependencies']).infer_activity_dependencies
+            infer_activity_dependencies(conn, 1)
         else:
             conn.execute(
                 "INSERT INTO discrepancy(project_id,title,detail,severity) VALUES(1,?,?,?)",

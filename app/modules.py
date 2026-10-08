@@ -7,6 +7,7 @@ from openpyxl.utils.exceptions import InvalidFileException
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QAbstractItemView,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -38,6 +39,10 @@ def _configure_table(table, headers):
     table.setSelectionBehavior(QTableWidget.SelectRows)
     table.setSelectionMode(QTableWidget.SingleSelection)
     table.setAlternatingRowColors(True)
+    table.setShowGrid(False)
+    table.setWordWrap(False)
+    table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+    table.verticalHeader().setDefaultSectionSize(36)
 
 
 class RecordDialog(QDialog):
@@ -120,6 +125,8 @@ class RecordPage(QWidget):
         self.records = []
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(22, 20, 22, 22)
+        root.setSpacing(12)
         heading = QLabel(title)
         heading.setStyleSheet(f"font-size:21px;font-weight:700;color:{TEXT};")
         root.addWidget(heading)
@@ -464,9 +471,55 @@ class ActivityPage(RecordPage):
         conn = connect()
         try:
             conn.execute("DELETE FROM activity_daily_actual WHERE activity_id=?", (record["id"],))
+            totals = conn.execute(
+                """
+                SELECT
+                    COALESCE((SELECT SUM(quantity) FROM activity_daily_plan WHERE activity_id=?),0) planned,
+                    COALESCE((SELECT SUM(quantity) FROM activity_daily_actual WHERE activity_id=?),0) actual
+                """,
+                (record["id"], record["id"]),
+            ).fetchone()
+            actual = float(totals["actual"] or 0)
+            planned = float(totals["planned"] or 0)
+            total = float(record["quantity"] or 0)
+            achievement = actual / planned * 100 if planned else 0
             conn.execute(
-                "UPDATE activity SET actual_qty=0, progress=0, status='NORMAL' WHERE id=? AND project_id=?",
-                (record["id"], self.project_id),
+                """
+                UPDATE activity
+                SET actual_qty=?, planned_qty=?, progress=?,
+                    status=CASE
+                        WHEN ? >= 100 THEN 'NORMAL'
+                        WHEN ? >= 90 THEN 'WARNING'
+                        ELSE 'CRITICAL'
+                    END
+                WHERE id=? AND project_id=?
+                """,
+                (
+                    actual,
+                    planned,
+                    actual / total if total else 0,
+                    achievement,
+                    achievement,
+                    record["id"],
+                    self.project_id,
+                ),
+            )
+            project_totals = conn.execute(
+                """
+                SELECT COALESCE(SUM(quantity),0) total_qty,
+                       COALESCE(SUM(actual_qty),0) actual_qty
+                FROM activity
+                WHERE project_id=?
+                """,
+                (self.project_id,),
+            ).fetchone()
+            project_progress = (
+                project_totals["actual_qty"] / project_totals["total_qty"]
+                if project_totals["total_qty"] else 0
+            )
+            conn.execute(
+                "UPDATE kpi SET physical_progress=? WHERE project_id=?",
+                (project_progress, self.project_id),
             )
             conn.commit()
         finally:
@@ -690,8 +743,9 @@ class SettingsPage(QWidget):
         description.setStyleSheet(f"color:{MUTED};")
         layout.addWidget(description)
         note = QLabel(
-            "ورود فعلی Excel فقط نام پروژه، دوره و شاخص‌های مالی را بروزرسانی می‌کند؛ "
-            "فعالیت‌ها، منابع و ریسک‌ها باید در ماژول‌های مربوط ثبت یا ویرایش شوند."
+            "ورود فایل Excel از شیت‌های اصلی پروژه انجام می‌شود: اطلاعات پروژه، خلاصه KPI، برنامه عملیاتی، "
+            "پیشرفت فیزیکی، داده‌های منابع و ماشین‌آلات و مصالح. در صورت نبود ساختار شیت، تنها داده‌های "
+            "مستند و قابل تشخیص وارد می‌شوند و بقیه داده‌ها در ماژول‌های مربوط قابل ویرایش هستند."
         )
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{MUTED};")

@@ -119,3 +119,127 @@ def aggregate_activity_control(conn: sqlite3.Connection, project_id: int = 1) ->
         item.update(activity_control(conn, row["id"]))
         result.append(item)
     return result
+
+
+def critical_activities(
+    conn: sqlite3.Connection,
+    project_id: int = 1,
+    limit: int = 8,
+) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, row_no, title, zone, status, delay_days, quantity, remaining_qty, progress "
+        "FROM activity WHERE project_id=?",
+        (project_id,),
+    ).fetchall()
+    ranked = []
+
+    for row in rows:
+        item = dict(row)
+        control = activity_control(conn, row["id"])
+        has_daily_actuals = control["actual_qty"] > 0
+        status = (row["status"] or "NORMAL").upper()
+        delay = max(0, int(row["delay_days"] or 0))
+        priority = {"CRITICAL": 3, "WARNING": 2}.get(status, 0)
+        if delay:
+            priority = max(priority, 2)
+        if priority == 0:
+            continue
+
+        reasons = []
+        if delay:
+            reasons.append(f"تأخیر {delay} روز")
+        if status in ("CRITICAL", "WARNING"):
+            reasons.append(f"وضعیت {status}")
+        item.update(
+            {
+                "priority": priority,
+                "priority_label": "بحرانی" if priority == 3 else "نیازمند پیگیری",
+                "reason": "، ".join(reasons),
+                "remaining_qty": (
+                    control["remaining_qty"]
+                    if has_daily_actuals or row["remaining_qty"] is None
+                    else float(row["remaining_qty"])
+                ),
+                "physical_progress_pct": (
+                    control["physical_progress_pct"]
+                    if has_daily_actuals
+                    else float(row["progress"] or 0) * 100
+                ),
+            }
+        )
+        ranked.append(item)
+
+    ranked.sort(
+        key=lambda item: (
+            -item["priority"],
+            -max(0, int(item["delay_days"] or 0)),
+            item["row_no"] if item["row_no"] is not None else item["id"],
+        )
+    )
+    return ranked[: max(0, limit)]
+
+
+def infer_activity_dependencies(conn: sqlite3.Connection, project_id: int = 1) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, row_no, position, zone, title, start_date, finish_date FROM activity "
+        "WHERE project_id=? ORDER BY row_no, id",
+        (project_id,),
+    ).fetchall()
+
+    created: list[dict] = []
+    seen = set()
+
+    for index, current in enumerate(rows):
+        if not current["start_date"]:
+            continue
+        try:
+            current_start = date.fromisoformat(str(current["start_date"])[:10])
+        except ValueError:
+            continue
+
+        for previous in rows[:index]:
+            if not previous["finish_date"]:
+                continue
+            try:
+                previous_finish = date.fromisoformat(str(previous["finish_date"])[:10])
+            except ValueError:
+                continue
+
+            same_group = (
+                (current["position"] or "") == (previous["position"] or "")
+                or (current["zone"] or "") == (previous["zone"] or "")
+            )
+            if not same_group:
+                continue
+            if current_start < previous_finish:
+                continue
+
+            key = (current["id"], previous["id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            lag_days = (current_start - previous_finish).days
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO activity_dependency(
+                    project_id, activity_id, predecessor_activity_id, relation_type, lag_days, notes
+                ) VALUES (?, ?, ?, 'finish_to_start', ?, ?)
+                """,
+                (
+                    project_id,
+                    current["id"],
+                    previous["id"],
+                    lag_days,
+                    f"استنتاج خودکار بر اساس ترتیب سطر و جبهه کاری: {current['title']} بعد از {previous['title']}",
+                ),
+            )
+            created.append(
+                {
+                    "activity_id": current["id"],
+                    "predecessor_activity_id": previous["id"],
+                    "lag_days": lag_days,
+                    "relation_type": "finish_to_start",
+                }
+            )
+
+    return created

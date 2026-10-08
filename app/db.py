@@ -94,6 +94,20 @@ CREATE TABLE IF NOT EXISTS activity_period (
     UNIQUE(activity_id, period)
 );
 
+CREATE TABLE IF NOT EXISTS activity_dependency (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL,
+    activity_id INTEGER NOT NULL,
+    predecessor_activity_id INTEGER NOT NULL,
+    relation_type TEXT DEFAULT 'finish_to_start',
+    lag_days INTEGER DEFAULT 0,
+    notes TEXT,
+    FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE,
+    FOREIGN KEY(activity_id) REFERENCES activity(id) ON DELETE CASCADE,
+    FOREIGN KEY(predecessor_activity_id) REFERENCES activity(id) ON DELETE CASCADE,
+    UNIQUE(project_id, activity_id, predecessor_activity_id)
+);
+
 CREATE TABLE IF NOT EXISTS revenue_entry (
     id INTEGER PRIMARY KEY,
     project_id INTEGER NOT NULL,

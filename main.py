@@ -2,14 +2,17 @@ import sys
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
+    QLabel,
     QListWidget,
     QMainWindow,
     QStackedWidget,
+    QVBoxLayout,
     QWidget,
 )
 from PySide6.QtCore import Qt
 from app.db import seed
-from app.ui import Dashboard, NAVY, BG, TEXT
+from app.theme import NAV, apply_theme
+from app.ui import Dashboard
 from app.modules import (
     ActivityPage,
     FinancePage,
@@ -23,26 +26,40 @@ from app.modules import (
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        application = QApplication.instance()
+        if application is not None:
+            apply_theme(application)
         self.setWindowTitle("Metro Project Control System")
-        self.resize(1500, 900)
+        self.resize(1440, 880)
+        self.setMinimumSize(1080, 700)
         self.setLayoutDirection(Qt.RightToLeft)
 
         root = QWidget()
-        root.setStyleSheet(
-            f"QWidget{{font-family:Segoe UI,Arial;background:{BG};color:{TEXT};}}"
-        )
+        root.setObjectName("mainRoot")
         lay = QHBoxLayout(root)
         lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
 
         side = QListWidget()
-        side.setFixedWidth(215)
-        side.setStyleSheet(
-            f"""
-            QListWidget{{background:{NAVY};color:white;border:0;padding:14px;}}
-            QListWidget::item{{padding:15px 8px;border-radius:8px;}}
-            QListWidget::item:selected{{background:#1677D2;}}
-            """
-        )
+        side.setObjectName("sidebar")
+        side.setFixedWidth(236)
+        side.setSpacing(2)
+        side.setUniformItemSizes(True)
+
+        sidebar = QWidget()
+        sidebar.setFixedWidth(236)
+        sidebar.setStyleSheet(f"background:{NAV};")
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(13, 20, 13, 16)
+        sidebar_layout.setSpacing(12)
+        brand = QLabel("مترو | کنترل پروژه")
+        brand.setStyleSheet("color:white;font-size:15pt;font-weight:700;padding:5px 9px;")
+        brand.setWordWrap(True)
+        subtitle = QLabel("مدیریت و پایش عملیات")
+        subtitle.setStyleSheet(f"color:#B4CBC3;font-size:9pt;padding:0 9px 10px;")
+        sidebar_layout.addWidget(brand)
+        sidebar_layout.addWidget(subtitle)
+        sidebar_layout.addWidget(side, 1)
         side.addItems(
             [
                 "داشبورد مدیریتی",
@@ -76,7 +93,7 @@ class MainWindow(QMainWindow):
         side.currentRowChanged.connect(self.refresh_dashboard_if_selected)
         side.setCurrentRow(0)
 
-        lay.addWidget(side)
+        lay.addWidget(sidebar)
         lay.addWidget(stack)
         self.setCentralWidget(root)
 
