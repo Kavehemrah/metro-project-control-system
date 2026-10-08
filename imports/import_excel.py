@@ -38,7 +38,7 @@ def _find_header_row(sheet, required_groups, max_rows=20):
     # Each group contains alternative labels; at least one label from every group is required.
     for row_no in range(1, min(sheet.max_row, max_rows) + 1):
         values = [_clean_text(sheet.cell(row_no, col).value) for col in range(1, sheet.max_column + 1)]
-        if all(any(keyword in value for value in values) for group in required_groups):
+        if all(any(keyword in value for keyword in group for value in values) for group in required_groups):
             return row_no
     return None
 
@@ -382,7 +382,7 @@ def _upsert_activity(conn, item, physical, row_no):
             planned_qty=?, actual_qty=?, progress=?, row_no=?, status=?
             WHERE id=?
             """,
-            (*values, row_no, existing["id"]),
+            (*values[:13], row_no, values[14], existing["id"]),
         )
         activity_id = existing["id"]
     else:
