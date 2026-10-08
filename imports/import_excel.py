@@ -35,10 +35,10 @@ def _row_text(row) -> str:
 
 
 def _find_header_row(sheet, required_groups, max_rows=20):
+    # Each group contains alternative labels; at least one label from every group is required.
     for row_no in range(1, min(sheet.max_row, max_rows) + 1):
         values = [_clean_text(sheet.cell(row_no, col).value) for col in range(1, sheet.max_column + 1)]
-        text = " | ".join(values)
-        if all(any(keyword in value for value in values) for group in required_groups for keyword in group):
+        if all(any(keyword in value for value in values) for group in required_groups):
             return row_no
     return None
 
@@ -271,6 +271,15 @@ def _parse_operational_plan(workbook):
             value = sheet.cell(r, col).value
             if value is not None:
                 labels.append(_clean_text(value))
+        date_value = next(
+            (sheet.cell(r, col).value for r in range(max(1, header_row - 3), header_row + 1)
+             if hasattr(sheet.cell(r, col).value, "strftime")),
+            None,
+        )
+        if date_value is not None:
+            daily_columns.append((col, date_value.strftime("%Y-%m-%d")))
+            continue
+
         label = next((v for v in labels if re.search(r"140[0-9][/\-]", v)), "")
         if label:
             daily_columns.append((col, label))
