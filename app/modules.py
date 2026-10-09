@@ -30,6 +30,7 @@ from .db import connect
 from .services.control import activity_control, update_activity_rollup
 from .services.dates import normalize_date
 from .services.forecast import calculate_schedule, forecast_finance
+from .services.actual_finance import finance_performance, record_actual
 from .ui import BLUE, MUTED, TEXT
 
 
@@ -79,6 +80,13 @@ class RecordDialog(QDialog):
                 widget.addItems(options["choices"])
                 if value in options["choices"]:
                     widget.setCurrentText(value)
+            elif kind == "activity":
+                widget = QComboBox()
+                widget.addItem("بدون تخصیص به فعالیت", None)
+                for activity_id, activity_label in options["choices"]:
+                    widget.addItem(activity_label, activity_id)
+                index = widget.findData(value)
+                widget.setCurrentIndex(index if index >= 0 else 0)
             else:
                 raise ValueError(f"Unsupported field type: {kind}")
             self.inputs[key] = (widget, kind, options)
@@ -99,6 +107,8 @@ class RecordDialog(QDialog):
                 result[key] = widget.text().strip()
             elif kind == "choice":
                 result[key] = widget.currentText()
+            elif kind == "activity":
+                result[key] = widget.currentData()
             else:
                 value = widget.value()
                 result[key] = value / 100 if kind == "percent" else value
@@ -842,6 +852,39 @@ class FinancePage(QWidget):
         self.forecast_summary.setWordWrap(True)
         self.forecast_summary.setStyleSheet(f"color:{MUTED};")
         layout.addWidget(self.forecast_summary)
+
+        self.actual_summary = QLabel()
+        self.actual_summary.setWordWrap(True)
+        self.actual_summary.setStyleSheet(f"font-size:14px;color:{TEXT};")
+        layout.addWidget(self.actual_summary)
+        actual_title = QLabel("دفتر درآمد و هزینه واقعی")
+        actual_title.setStyleSheet(f"font-size:17px;font-weight:600;color:{TEXT};")
+        layout.addWidget(actual_title)
+        actual_note = QLabel(
+            "این دفتر از مبالغ برنامه‌ای جداست. ثبت هزینه یا درآمد واقعی نیازمند ورود دستی اطلاعات معتبر است؛ "
+            "برآورد EAC فقط برای فعالیت‌هایی محاسبه می‌شود که بودجه هزینه، پیشرفت و هزینه واقعی تخصیص‌یافته داشته باشند."
+        )
+        actual_note.setWordWrap(True)
+        actual_note.setStyleSheet(f"color:{MUTED};")
+        layout.addWidget(actual_note)
+        self.actual_table = QTableWidget()
+        _configure_table(
+            self.actual_table,
+            ["تاریخ", "دوره", "نوع", "شرح", "مبلغ (ریال)", "فعالیت مرتبط", "توضیحات"],
+        )
+        layout.addWidget(self.actual_table)
+        actual_actions = QHBoxLayout()
+        self.add_actual_button = QPushButton("ثبت درآمد/هزینه واقعی")
+        self.edit_actual_button = QPushButton("ویرایش رکورد واقعی")
+        self.delete_actual_button = QPushButton("حذف رکورد واقعی")
+        for button in (self.add_actual_button, self.edit_actual_button, self.delete_actual_button):
+            actual_actions.addWidget(button)
+        actual_actions.addStretch()
+        layout.addLayout(actual_actions)
+        self.add_actual_button.clicked.connect(self.add_actual_entry)
+        self.edit_actual_button.clicked.connect(self.edit_actual_entry)
+        self.delete_actual_button.clicked.connect(self.delete_actual_entry)
+
         self.table = QTableWidget()
         _configure_table(self.table, ["دوره", "درآمد (ریال)", "هزینه (ریال)", "بالانس (ریال)"])
         layout.addWidget(self.table)
@@ -879,6 +922,16 @@ class FinancePage(QWidget):
                 "SELECT revenue, cost, balance FROM kpi WHERE project_id=1 ORDER BY id DESC LIMIT 1"
             ).fetchone()
             forecast = forecast_finance(conn, 1)
+            performance = finance_performance(conn, 1)
+            actual_entries = conn.execute(
+                """
+                SELECT e.*, a.row_no, a.title AS activity_title
+                FROM actual_finance_entry e
+                LEFT JOIN activity a ON a.id=e.activity_id
+                WHERE e.project_id=1
+                ORDER BY e.entry_date DESC, e.id DESC
+                """
+            ).fetchall()
             activities = conn.execute(
                 "SELECT id,row_no,title,zone FROM activity WHERE project_id=1 ORDER BY row_no,id"
             ).fetchall()
@@ -890,6 +943,39 @@ class FinancePage(QWidget):
                     allocation_rows.append((table_name, label, entry))
         finally:
             conn.close()
+
+        self.actual_table.setRowCount(len(actual_entries))
+        for row_index, entry in enumerate(actual_entries):
+            kind = "درآمد واقعی" if entry["entry_type"] == "REVENUE" else "هزینه واقعی"
+            activity_label = (
+                f"{entry['row_no']} - {entry['activity_title'] or 'فعالیت'}"
+                if entry["activity_id"] is not None else "بدون تخصیص"
+            )
+            values = [
+                entry["entry_date"], entry["period"] or "", kind, entry["category"],
+                f"{float(entry['amount'] or 0):,.0f}", activity_label, entry["notes"] or "",
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                if column == 0:
+                    item.setData(Qt.UserRole, entry["id"])
+                self.actual_table.setItem(row_index, column, item)
+        self.actual_table.resizeColumnsToContents()
+        eac_text = (
+            f"EAC هزینه برای {performance['assessed_activity_count']} فعالیتِ قابل ارزیابی: "
+            f"{performance['eac_assessed']:,.0f} ریال"
+            if performance["eac_assessed"] is not None
+            else "EAC هزینه هنوز قابل محاسبه نیست؛ برای فعالیت‌های دارای بودجه، هزینه واقعی و پیشرفت تخصیص‌یافته ثبت کنید."
+        )
+        cpi_text = f"{performance['cpi']:.3f}" if performance["cpi"] is not None else "نامشخص"
+        self.actual_summary.setText(
+            f"واقعی ثبت‌شده: درآمد {performance['actual_revenue']:,.0f} ریال | "
+            f"هزینه {performance['actual_cost']:,.0f} ریال | "
+            f"خالص {performance['actual_net']:,.0f} ریال. "
+            f"ارزش کسب‌شده هزینه (EV): {performance['earned_value_cost']:,.0f} ریال؛ "
+            f"CPI: {cpi_text}. {eac_text}. "
+            f"بودجه هزینه ارزیابی‌نشده: {performance['unassessed_budget']:,.0f} ریال."
+        )
 
         self.allocations_table.setRowCount(len(allocation_rows))
         for row_index, (table_name, label, entry) in enumerate(allocation_rows):
@@ -965,6 +1051,113 @@ class FinancePage(QWidget):
         finally:
             conn.close()
         QMessageBox.information(self, "تخصیص مالی", "تخصیص‌های مالی ذخیره شد.")
+        self.refresh()
+
+
+    def _actual_entry_dialog(self, existing=None):
+        conn = connect()
+        try:
+            activities = conn.execute(
+                "SELECT id,row_no,title,zone FROM activity WHERE project_id=1 ORDER BY row_no,id"
+            ).fetchall()
+        finally:
+            conn.close()
+        choices = []
+        for activity in activities:
+            prefix = f"{activity['row_no']} - " if activity["row_no"] is not None else f"ID {activity['id']} - "
+            suffix = f" ({activity['zone']})" if activity["zone"] else ""
+            choices.append((activity["id"], f"{prefix}{activity['title'] or 'فعالیت'}{suffix}"))
+        initial = dict(existing or {})
+        initial["entry_type"] = (
+            "درآمد واقعی" if initial.get("entry_type") == "REVENUE"
+            else "هزینه واقعی" if initial.get("entry_type") == "COST"
+            else "هزینه واقعی"
+        )
+        fields = [
+            ("entry_date", "تاریخ (شمسی یا میلادی)", "text", {}),
+            ("period", "دوره گزارش", "text", {}),
+            ("entry_type", "نوع رکورد", "choice", {"choices": ["درآمد واقعی", "هزینه واقعی"]}),
+            ("category", "شرح / دسته", "text", {}),
+            ("amount", "مبلغ (ریال)", "number", {"minimum": 0, "decimals": 0}),
+            ("activity_id", "فعالیت مرتبط", "activity", {"choices": choices}),
+            ("notes", "توضیحات", "text", {}),
+        ]
+        dialog = RecordDialog("ثبت/ویرایش درآمد و هزینه واقعی", fields, initial, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        values = dialog.values()
+        if not values["entry_date"] or not values["category"]:
+            QMessageBox.warning(self, "ورودی ناقص", "تاریخ و شرح الزامی است.")
+            return
+        try:
+            normalized_date = normalize_date(values["entry_date"])
+            entry_type = "REVENUE" if values["entry_type"] == "درآمد واقعی" else "COST"
+            conn = connect()
+            try:
+                record_actual(
+                    conn,
+                    project_id=1,
+                    entry_date=normalized_date,
+                    period=values["period"],
+                    entry_type=entry_type,
+                    category=values["category"],
+                    amount=values["amount"],
+                    activity_id=values["activity_id"],
+                    notes=values["notes"],
+                    entry_id=existing["id"] if existing is not None else None,
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except (ValueError, sqlite3.Error) as error:
+            QMessageBox.warning(self, "ثبت ناموفق", str(error))
+            return
+        self.refresh()
+
+    def add_actual_entry(self):
+        self._actual_entry_dialog()
+
+    def edit_actual_entry(self):
+        row = self.actual_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "انتخاب رکورد", "ابتدا یک رکورد از دفتر واقعی انتخاب کنید.")
+            return
+        item = self.actual_table.item(row, 0)
+        entry_id = item.data(Qt.UserRole) if item is not None else None
+        conn = connect()
+        try:
+            existing = conn.execute(
+                "SELECT * FROM actual_finance_entry WHERE id=? AND project_id=1 AND source='MANUAL'",
+                (entry_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if existing is None:
+            QMessageBox.warning(self, "رکورد نامعتبر", "رکورد انتخاب‌شده پیدا نشد یا قابل ویرایش نیست.")
+            return
+        self._actual_entry_dialog(dict(existing))
+
+    def delete_actual_entry(self):
+        row = self.actual_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "انتخاب رکورد", "ابتدا یک رکورد از دفتر واقعی انتخاب کنید.")
+            return
+        item = self.actual_table.item(row, 0)
+        entry_id = item.data(Qt.UserRole) if item is not None else None
+        answer = QMessageBox.question(
+            self, "تأیید حذف", "رکورد مالی واقعی انتخاب‌شده حذف شود؟"
+        )
+        if answer != QMessageBox.Yes:
+            return
+        conn = connect()
+        try:
+            conn.execute(
+                "DELETE FROM actual_finance_entry WHERE id=? AND project_id=1 AND source='MANUAL'",
+                (entry_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
         self.refresh()
 
 

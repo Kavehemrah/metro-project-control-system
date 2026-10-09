@@ -156,6 +156,21 @@ CREATE TABLE IF NOT EXISTS cost_entry (
     FOREIGN KEY(activity_id) REFERENCES activity(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS actual_finance_entry (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL,
+    activity_id INTEGER,
+    entry_date TEXT NOT NULL,
+    period TEXT,
+    entry_type TEXT NOT NULL CHECK(entry_type IN ('REVENUE','COST')),
+    category TEXT NOT NULL,
+    amount REAL NOT NULL DEFAULT 0 CHECK(amount >= 0),
+    notes TEXT,
+    source TEXT DEFAULT 'MANUAL',
+    FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE,
+    FOREIGN KEY(activity_id) REFERENCES activity(id) ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS resource (
     id INTEGER PRIMARY KEY,
     project_id INTEGER NOT NULL,
