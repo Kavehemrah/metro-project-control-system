@@ -323,6 +323,9 @@ class ActivityPage(RecordPage):
         self.schedule_notice.setWordWrap(True)
         self.schedule_notice.setStyleSheet(f"color:{MUTED};")
         self.layout().insertWidget(1, self.schedule_notice)
+        self.dependency_button = QPushButton("مدیریت پیش‌نیازها")
+        self.dependency_button.clicked.connect(self.manage_dependencies)
+        self.layout().itemAt(2).layout().addWidget(self.dependency_button)
         if progress_only:
             self.add_button.setText("ثبت عملکرد روزانه")
             self.edit_button.setText("ثبت عملکرد")
@@ -384,6 +387,148 @@ class ActivityPage(RecordPage):
         finally:
             conn.close()
         self.table.resizeColumnsToContents()
+
+    def manage_dependencies(self):
+        activity = self._selected_record()
+        if not activity:
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"پیش‌نیازهای فعالیت: {activity['title'] or activity['id']}")
+        dialog.setLayoutDirection(Qt.RightToLeft)
+        dialog.resize(760, 520)
+        root = QVBoxLayout(dialog)
+        form = QFormLayout()
+        predecessor = QComboBox()
+        relation = QComboBox()
+        relation.addItem("پایان به شروع (FS)", "finish_to_start")
+        relation.addItem("شروع به شروع (SS)", "start_to_start")
+        relation.addItem("پایان به پایان (FF)", "finish_to_finish")
+        relation.addItem("شروع به پایان (SF)", "start_to_finish")
+        lag = QSpinBox()
+        lag.setRange(-365, 365)
+        lag.setValue(0)
+        form.addRow("فعالیت پیش‌نیاز", predecessor)
+        form.addRow("نوع رابطه", relation)
+        form.addRow("وقفه تقویمی (روز)", lag)
+        root.addLayout(form)
+
+        dependency_table = QTableWidget()
+        _configure_table(dependency_table, ["پیش‌نیاز", "نوع رابطه", "وقفه (روز)", "منبع"])
+        root.addWidget(dependency_table)
+
+        def load_dependencies():
+            conn = connect()
+            try:
+                activities = conn.execute(
+                    "SELECT id,row_no,title,zone FROM activity WHERE project_id=? AND id<>? ORDER BY row_no,id",
+                    (self.project_id, activity["id"]),
+                ).fetchall()
+                current = conn.execute(
+                    """
+                    SELECT d.id,d.relation_type,d.lag_days,d.source,a.row_no,a.title,a.zone
+                    FROM activity_dependency d
+                    JOIN activity a ON a.id=d.predecessor_activity_id
+                    WHERE d.project_id=? AND d.activity_id=?
+                    ORDER BY a.row_no,a.id
+                    """,
+                    (self.project_id, activity["id"]),
+                ).fetchall()
+            finally:
+                conn.close()
+            predecessor.clear()
+            for item in activities:
+                prefix = f"{item['row_no']} - " if item["row_no"] is not None else ""
+                suffix = f" ({item['zone']})" if item["zone"] else ""
+                predecessor.addItem(f"{prefix}{item['title'] or 'فعالیت'}{suffix}", item["id"])
+            dependency_table.setRowCount(len(current))
+            relation_labels = {
+                "finish_to_start": "FS",
+                "start_to_start": "SS",
+                "finish_to_finish": "FF",
+                "start_to_finish": "SF",
+            }
+            for row_index, item in enumerate(current):
+                cell = QTableWidgetItem(f"{item['row_no'] or ''} - {item['title'] or ''}")
+                cell.setData(Qt.UserRole, item["id"])
+                dependency_table.setItem(row_index, 0, cell)
+                dependency_table.setItem(row_index, 1, QTableWidgetItem(relation_labels.get(item["relation_type"], item["relation_type"] or "")))
+                dependency_table.setItem(row_index, 2, QTableWidgetItem(str(item["lag_days"] or 0)))
+                dependency_table.setItem(row_index, 3, QTableWidgetItem(item["source"] or ""))
+            dependency_table.resizeColumnsToContents()
+
+        def add_dependency():
+            predecessor_id = predecessor.currentData()
+            if predecessor_id is None:
+                QMessageBox.warning(dialog, "پیش‌نیاز", "ابتدا یک فعالیت پیش‌نیاز انتخاب کنید.")
+                return
+            conn = connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO activity_dependency(
+                        project_id,activity_id,predecessor_activity_id,relation_type,lag_days,notes,source
+                    ) VALUES(?,?,?,?,?,?, 'MANUAL')
+                    ON CONFLICT(project_id,activity_id,predecessor_activity_id) DO UPDATE SET
+                        relation_type=excluded.relation_type,
+                        lag_days=excluded.lag_days,
+                        notes=excluded.notes,
+                        source='MANUAL'
+                    """,
+                    (
+                        self.project_id, activity["id"], predecessor_id,
+                        relation.currentData(), lag.value(),
+                        "وابستگی تعریف‌شده توسط کاربر",
+                    ),
+                )
+                conn.commit()
+            except sqlite3.IntegrityError as error:
+                conn.rollback()
+                QMessageBox.warning(dialog, "وابستگی نامعتبر", str(error))
+                return
+            finally:
+                conn.close()
+            load_dependencies()
+
+        def remove_dependency():
+            row_index = dependency_table.currentRow()
+            if row_index < 0:
+                return
+            item = dependency_table.item(row_index, 0)
+            dependency_id = item.data(Qt.UserRole) if item else None
+            if dependency_id is None:
+                return
+            confirm = QMessageBox.question(
+                dialog, "حذف پیش‌نیاز", "وابستگی انتخاب‌شده حذف شود؟"
+            )
+            if confirm != QMessageBox.Yes:
+                return
+            conn = connect()
+            try:
+                conn.execute(
+                    "DELETE FROM activity_dependency WHERE id=? AND project_id=? AND activity_id=?",
+                    (dependency_id, self.project_id, activity["id"]),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            load_dependencies()
+
+        actions = QHBoxLayout()
+        add_button = QPushButton("ثبت / به‌روزرسانی پیش‌نیاز")
+        add_button.clicked.connect(add_dependency)
+        remove_button = QPushButton("حذف پیش‌نیاز انتخاب‌شده")
+        remove_button.clicked.connect(remove_dependency)
+        close_button = QPushButton("بستن")
+        close_button.clicked.connect(dialog.accept)
+        actions.addWidget(add_button)
+        actions.addWidget(remove_button)
+        actions.addStretch()
+        actions.addWidget(close_button)
+        root.addLayout(actions)
+        load_dependencies()
+        dialog.exec()
+        self.refresh()
 
     def _actual_rows(self, record):
         conn = connect()
