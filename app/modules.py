@@ -1506,20 +1506,21 @@ class FinancePage(QWidget):
                 self.actual_table.setItem(row_index, column, item)
         self.actual_table.resizeColumnsToContents()
         eac_text = (
-            f"EAC هزینه برای {performance['assessed_activity_count']} فعالیتِ قابل ارزیابی: "
-            f"{performance['eac_assessed']:,.0f} ریال"
+            f"برآورد هزینه پایه به‌علاوه هزینه‌های پیش‌بینی‌نشده، برای "
+            f"{performance['budgeted_activity_count']} فعالیت بودجه‌بندی‌شده از "
+            f"{performance['total_activity_count']} فعالیت: {performance['eac_assessed']:,.0f} ریال."
             if performance["eac_assessed"] is not None
-            else "EAC هزینه هنوز قابل محاسبه نیست؛ برای فعالیت‌های دارای بودجه، هزینه واقعی و پیشرفت تخصیص‌یافته ثبت کنید."
+            else "هنوز ریز هزینه واحدمحور تعریف نشده است؛ در صفحه «برآورد هزینه و منابع فعالیت» اقلام و بهای واحد را ثبت کنید."
         )
-        cpi_text = f"{performance['cpi']:.3f}" if performance["cpi"] is not None else "نامشخص"
         self.actual_summary.setText(
             f"واقعی ثبت‌شده: درآمد {performance['actual_revenue']:,.0f} ریال | "
-            f"هزینه {performance['actual_cost']:,.0f} ریال | "
+            f"هزینه‌های ثبت‌شده {performance['actual_cost']:,.0f} ریال | "
             f"خالص {performance['actual_net']:,.0f} ریال. "
-            f"هزینه پیش‌بینی‌نشده ثبت‌شده: {performance['unplanned_actual_cost']:,.0f} ریال. "
-            f"ارزش کسب‌شده هزینه (EV): {performance['earned_value_cost']:,.0f} ریال؛ "
-            f"CPI: {cpi_text}. {eac_text}. "
-            f"بودجه هزینه ارزیابی‌نشده: {performance['unassessed_budget']:,.0f} ریال."
+            f"از هزینه‌های ثبت‌شده، {performance['unplanned_actual_cost']:,.0f} ریال پیش‌بینی‌نشده است. "
+            f"ارزش کسب‌شده بر مبنای بودجه هزینه (EV): {performance['earned_value_cost']:,.0f} ریال. "
+            f"پوشش فعالیت‌ها با ریز هزینه پایه: {performance['cost_model_coverage_pct']:.1f}٪؛ "
+            f"فعالیت فاقد بودجه واحدمحور: {performance['unbudgeted_activity_count']}. "
+            f"{eac_text} شاخص CPI و هزینه باقی‌مانده نمایش داده نمی‌شوند، چون برای محاسبه معتبر آن‌ها باید هزینه واقعی عادی به‌صورت کامل تجمیع شود؛ ثبت روزانه برای برآورد پایه لازم نیست."
         )
 
         self.allocations_table.setRowCount(len(allocation_rows))
