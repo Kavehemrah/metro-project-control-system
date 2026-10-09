@@ -244,6 +244,7 @@ def forecast_finance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
             row["source"] == "EXCEL_ACTIVITY" and row["activity_id"] is not None
             for row in rows
         )
+        has_activity_cost_budget = name == "cost" and bool(unit_cost_budgets)
         linked_budget = 0.0
         earned_to_date = 0.0
         unallocated = 0.0
@@ -257,7 +258,10 @@ def forecast_finance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
                 # Do not add an older flat cost_entry allocation on top of it.
                 continue
             if activity_id is None:
-                if has_activity_revenue and entry["source"] == "EXCEL":
+                if (
+                    (has_activity_revenue and name == "revenue" and entry["source"] == "EXCEL")
+                    or (has_activity_cost_budget and name == "cost" and entry["source"] == "EXCEL")
+                ):
                     summary_reference += amount
                 else:
                     unallocated += amount
