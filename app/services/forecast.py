@@ -50,10 +50,10 @@ def _observed_finish(conn, row, remaining: float, as_of: date) -> date | None:
         (row["id"],),
     ).fetchall()
     if not days:
-        return _as_date(row["forecast_finish"])
+        return None
     last_day = _as_date(days[-1]["actual_date"])
     if last_day is None:
-        return _as_date(row["forecast_finish"])
+        return None
     if remaining <= 0:
         return last_day
     quantities = [max(0.0, float(item["quantity"] or 0)) for item in days]
