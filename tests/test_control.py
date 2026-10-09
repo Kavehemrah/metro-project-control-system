@@ -29,7 +29,8 @@ def test_critical_activities_prioritize_status_and_delay():
             progress REAL,
             daily_target REAL,
             start_date TEXT,
-            finish_date TEXT
+            finish_date TEXT,
+            forecast_finish TEXT
         );
         CREATE TABLE activity_daily_plan (
             activity_id INTEGER, plan_date TEXT, quantity REAL, source TEXT DEFAULT 'EXCEL'
