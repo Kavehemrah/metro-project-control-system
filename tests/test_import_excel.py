@@ -397,7 +397,7 @@ def test_activity_control_separates_period_and_cumulative_actuals(tmp_path):
     assert control["actual_qty"] == 55
     assert control["variance_qty"] == -3
     assert control["achievement_pct"] == 85
-    assert control["physical_progress_pct"] == 55
+    assert math.isclose(control["physical_progress_pct"], 55, abs_tol=1e-9)
     assert control["remaining_qty"] == 45
 
 
