@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - kavehemrah-metro-control-fix
+      - feature/schedule-finance-resource-forecast
   pull_request:
     branches:
       - main
