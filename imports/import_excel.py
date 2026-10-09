@@ -9,6 +9,7 @@ import openpyxl
 
 from app.db import connect
 from app.services.control import activity_control, detect_finance_discrepancy, scan_formula_errors
+from app.services.forecast import calculate_schedule
 
 
 def _clean_text(value) -> str:
@@ -1047,6 +1048,17 @@ def import_workbook(path, db_path: str | Path | None = None):
                 )
             infer_activity_dependencies = __import__('app.services.control', fromlist=['infer_activity_dependencies']).infer_activity_dependencies
             infer_activity_dependencies(conn, 1)
+            schedule_result = calculate_schedule(conn, 1, persist=True)
+            if schedule_result["cycle"]:
+                conn.execute(
+                    "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
+                    (
+                        "چرخه در وابستگی فعالیت‌ها",
+                        "محاسبه زمان‌بندی به دلیل چرخه وابستگی انجام نشد: "
+                        + "، ".join(schedule_result.get("cycle_titles", [])),
+                        "HIGH",
+                    ),
+                )
             stale_count = conn.execute(
                 "SELECT COUNT(*) FROM activity WHERE project_id=1 AND source='EXCEL' "
                 "AND id NOT IN ({})".format(
