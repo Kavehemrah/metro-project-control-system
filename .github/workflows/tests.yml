@@ -5,6 +5,7 @@ on:
     branches:
       - kavehemrah-metro-control-fix
       - feature/schedule-finance-resource-forecast
+      - feature/actual-finance-eac
   pull_request:
     branches:
       - main
