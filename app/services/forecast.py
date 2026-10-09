@@ -234,7 +234,7 @@ def forecast_finance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
         rows = conn.execute(
             f"""
             SELECT id, activity_id, amount FROM {table}
-            WHERE project_id=? AND source IN ('EXCEL','MANUAL')
+            WHERE project_id=? AND source IN ('EXCEL','MANUAL','EXCEL_ACTIVITY')
             """,
             (project_id,),
         ).fetchall()
