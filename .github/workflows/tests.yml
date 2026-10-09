@@ -11,6 +11,7 @@ on:
     branches:
       - main
       - feature/schedule-finance-resource-forecast
+      - feature/actual-finance-eac
 
 jobs:
   pytest:
