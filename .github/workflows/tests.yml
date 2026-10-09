@@ -6,6 +6,7 @@ on:
       - kavehemrah-metro-control-fix
       - feature/schedule-finance-resource-forecast
       - feature/actual-finance-eac
+      - feature/activity-cost-resource-planning
   pull_request:
     branches:
       - main
