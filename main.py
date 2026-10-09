@@ -98,9 +98,16 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
 
     def refresh_data(self):
-        self.dashboard.build()
-        finance = self.stack.widget(3)
-        finance.refresh()
+        # Excel import affects more than the dashboard and finance summary.
+        # Refresh every data page so currently open tables do not remain stale.
+        for index in range(self.stack.count()):
+            page = self.stack.widget(index)
+            if page is self.dashboard:
+                page.build()
+                continue
+            refresh = getattr(page, "refresh", None)
+            if callable(refresh):
+                refresh()
 
     def refresh_dashboard_if_selected(self, index):
         if index == 0:
