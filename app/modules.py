@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QInputDialog,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from .db import connect
 from .services.control import activity_control, update_activity_rollup
+from .services.dates import normalize_date
 from .ui import BLUE, MUTED, TEXT
 
 
@@ -367,13 +369,51 @@ class ActivityPage(RecordPage):
             conn.close()
         self.table.resizeColumnsToContents()
 
-    def _record_actual(self, record):
+    def _actual_rows(self, record):
+        conn = connect()
+        try:
+            return conn.execute(
+                """
+                SELECT id, actual_date, quantity, notes
+                FROM activity_daily_actual
+                WHERE activity_id=? AND source='MANUAL'
+                ORDER BY actual_date DESC, id DESC
+                """,
+                (record["id"],),
+            ).fetchall()
+        finally:
+            conn.close()
+
+    def _choose_actual(self, record, action):
+        rows = self._actual_rows(record)
+        if not rows:
+            QMessageBox.information(self, "عملکرد روزانه", "برای این فعالیت عملکرد دستی ثبت نشده است.")
+            return None
+        labels = [
+            f"{row['actual_date']} | مقدار {float(row['quantity'] or 0):,.2f}"
+            + (f" | {row['notes']}" if row["notes"] else "")
+            for row in rows
+        ]
+        selected, accepted = QInputDialog.getItem(
+            self, f"{action} عملکرد", "رکورد عملکرد موردنظر را انتخاب کنید:", labels, 0, False
+        )
+        if not accepted:
+            return None
+        return rows[labels.index(selected)]
+
+    def _record_actual(self, record, existing_actual=None):
         fields = [
-            ("actual_date", "تاریخ عملکرد", "text", {}),
+            ("actual_date", "تاریخ عملکرد (مثلاً 1405/07/15)", "text", {}),
             ("quantity", f"مقدار عملکرد ({record['unit'] or ''})", "number", {"minimum": 0, "decimals": 2}),
             ("notes", "توضیحات", "text", {}),
         ]
-        dialog = RecordDialog("ثبت عملکرد روزانه", fields, {}, self)
+        initial = dict(existing_actual) if existing_actual is not None else {}
+        dialog = RecordDialog(
+            "ویرایش عملکرد روزانه" if existing_actual is not None else "ثبت عملکرد روزانه",
+            fields,
+            initial,
+            self,
+        )
         if dialog.exec() != QDialog.Accepted:
             return
 
@@ -381,22 +421,51 @@ class ActivityPage(RecordPage):
         if not values["actual_date"] or values["quantity"] <= 0:
             QMessageBox.warning(self, "ورودی ناقص", "تاریخ و مقدار عملکرد الزامی است.")
             return
+        try:
+            actual_date = normalize_date(values["actual_date"])
+        except ValueError as error:
+            QMessageBox.warning(self, "تاریخ نامعتبر", str(error))
+            return
 
         conn = connect()
         try:
-            conn.execute(
-                """
-                INSERT INTO activity_daily_actual(activity_id, actual_date, quantity, source, notes)
-                VALUES(?, ?, ?, 'MANUAL', ?)
-                ON CONFLICT(activity_id, actual_date) DO UPDATE SET
-                    quantity=excluded.quantity,
-                    notes=excluded.notes
-                """,
-                (record["id"], values["actual_date"], values["quantity"], values["notes"]),
-            )
-
+            if existing_actual is not None:
+                conn.execute(
+                    """
+                    UPDATE activity_daily_actual
+                    SET actual_date=?, quantity=?, notes=?
+                    WHERE id=? AND activity_id=? AND source='MANUAL'
+                    """,
+                    (
+                        actual_date,
+                        values["quantity"],
+                        values["notes"],
+                        existing_actual["id"],
+                        record["id"],
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO activity_daily_actual(activity_id, actual_date, quantity, source, notes)
+                    VALUES(?, ?, ?, 'MANUAL', ?)
+                    ON CONFLICT(activity_id, actual_date) DO UPDATE SET
+                        quantity=excluded.quantity,
+                        notes=excluded.notes
+                    WHERE activity_daily_actual.source='MANUAL'
+                    """,
+                    (record["id"], actual_date, values["quantity"], values["notes"]),
+                )
             update_activity_rollup(conn, record["id"])
             conn.commit()
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            QMessageBox.warning(
+                self,
+                "تاریخ تکراری",
+                "برای این فعالیت در این تاریخ عملکرد ثبت شده است. تاریخ دیگری انتخاب کنید یا همان رکورد را ویرایش کنید.",
+            )
+            return
         finally:
             conn.close()
         self.refresh()
@@ -413,7 +482,9 @@ class ActivityPage(RecordPage):
         if self.progress_only:
             record = self._selected_record()
             if record:
-                self._record_actual(record)
+                actual = self._choose_actual(record, "ویرایش")
+                if actual:
+                    self._record_actual(record, actual)
             return
         super().edit_record()
 
@@ -424,14 +495,28 @@ class ActivityPage(RecordPage):
         record = self._selected_record()
         if not record:
             return
+        actual = self._choose_actual(record, "حذف")
+        if not actual:
+            return
+        confirm = QMessageBox.question(
+            self,
+            "تأیید حذف",
+            f"عملکرد {actual['actual_date']} با مقدار {float(actual['quantity'] or 0):,.2f} حذف شود؟",
+        )
+        if confirm != QMessageBox.Yes:
+            return
         conn = connect()
         try:
-            conn.execute("DELETE FROM activity_daily_actual WHERE activity_id=?", (record["id"],))
+            conn.execute(
+                "DELETE FROM activity_daily_actual WHERE id=? AND activity_id=? AND source='MANUAL'",
+                (actual["id"], record["id"]),
+            )
             update_activity_rollup(conn, record["id"])
             conn.commit()
         finally:
             conn.close()
         self.refresh()
+
 
 
 RESOURCE_FIELDS = [
