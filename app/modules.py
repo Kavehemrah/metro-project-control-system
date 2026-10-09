@@ -1141,8 +1141,8 @@ class ActivityCostResourcePage(QWidget):
         if dialog.exec() != QDialog.Accepted:
             return None
         values = dialog.values()
-        if not values["item_name"]:
-            QMessageBox.warning(self, "ورودی ناقص", "شرح هزینه الزامی است.")
+        if not values["item_name"] or not values["unit"]:
+            QMessageBox.warning(self, "ورودی ناقص", "شرح و واحد هزینه الزامی است.")
             return None
         return values
 
