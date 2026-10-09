@@ -776,7 +776,7 @@ class ActivityPage(RecordPage):
         confirm = QMessageBox.question(
             self,
             "تأیید حذف",
-            f"عملکرد {actual['actual_date']} با مقدار {float(actual['quantity'] or 0):,.2f} حذف شود؟",
+            f"عملکرد {format_date(actual['actual_date'])} با مقدار {float(actual['quantity'] or 0):,.2f} حذف شود؟",
         )
         if confirm != QMessageBox.Yes:
             return
