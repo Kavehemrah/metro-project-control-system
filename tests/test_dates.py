@@ -35,6 +35,7 @@ def test_format_date_renders_gregorian_storage_as_jalali():
     rendered = f"{expected.year:04d}/{expected.month:02d}/{expected.day:02d}"
     assert format_date("2026-10-09") == rendered
     assert format_date("2026-10-09 00:00:00") == rendered
+    assert format_date("00:00:00 2026-10-09") == rendered
     assert format_date("1405/07/17 00:00:00") == "1405/07/17"
 
 
