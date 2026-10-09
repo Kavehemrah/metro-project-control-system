@@ -42,9 +42,9 @@ def test_critical_activities_prioritize_status_and_delay():
             activity_id INTEGER, period TEXT, planned_qty REAL, actual_qty REAL, source TEXT DEFAULT 'EXCEL'
         );
         INSERT INTO activity VALUES
-            (1, 1, 1, 'عادی', 'جبهه ۱', 'NORMAL', 0, 100, 0, 40, 0, 0, 0, 0.6, 10, NULL, NULL),
-            (2, 1, 2, 'هشدار', 'جبهه ۱', 'WARNING', 4, 100, 0, 60, 0, 0, 0, 0.4, 10, NULL, NULL),
-            (3, 1, 3, 'بحرانی', 'جبهه ۲', 'CRITICAL', 1, 100, 0, 50, 20, 20, 0, 0.5, 10, NULL, NULL);
+            (1, 1, 1, 'عادی', 'جبهه ۱', 'NORMAL', 0, 100, 0, 40, 0, 0, 0, 0.6, 10, NULL, NULL, NULL),
+            (2, 1, 2, 'هشدار', 'جبهه ۱', 'WARNING', 4, 100, 0, 60, 0, 0, 0, 0.4, 10, NULL, NULL, NULL),
+            (3, 1, 3, 'بحرانی', 'جبهه ۲', 'CRITICAL', 1, 100, 0, 50, 20, 20, 0, 0.5, 10, NULL, NULL, NULL);
         """
     )
 
