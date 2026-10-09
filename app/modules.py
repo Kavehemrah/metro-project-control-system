@@ -120,8 +120,7 @@ class RecordDialog(QDialog):
             if kind == "text":
                 result[key] = widget.text().strip()
             elif kind == "date":
-                raw_date = widget.text().strip()
-                result[key] = normalize_date(raw_date) if raw_date else None
+                result[key] = widget.text().strip() or None
             elif kind == "choice":
                 result[key] = widget.currentText()
             elif kind in ("activity", "resource"):
@@ -221,7 +220,11 @@ class RecordPage(QWidget):
         return values
 
     def _save_values(self, values, record_id=None):
-        values = self.prepare_values(values)
+        try:
+            values = self.prepare_values(values)
+        except ValueError as error:
+            QMessageBox.warning(self, "ورودی نامعتبر", str(error))
+            return
         keys = list(values)
         conn = connect()
         try:
@@ -417,6 +420,8 @@ class ActivityPage(RecordPage):
             self._updating_filter_choices = False
 
     def prepare_values(self, values):
+        for key in ("start_date", "finish_date"):
+            values[key] = normalize_date(values[key]) if values.get(key) else None
         values["source"] = "MANUAL"
         return values
 
