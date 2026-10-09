@@ -53,6 +53,7 @@ def finance_performance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
     ).fetchall()
 
     earned_value = 0.0
+    assessed_earned_value = 0.0
     assessed_budget = 0.0
     assessed_actual_cost = 0.0
     assessed_eac = 0.0
@@ -68,12 +69,13 @@ def finance_performance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
         if actual_cost > 0 and progress > 0:
             assessed_budget += budget
             assessed_actual_cost += actual_cost
+            assessed_earned_value += budget * progress
             assessed_eac += actual_cost / progress
             assessed_count += 1
 
     total_linked_cost_budget = budgets["cost"]["linked"]
     unassessed_budget = max(0.0, total_linked_cost_budget - assessed_budget)
-    cpi = earned_value / assessed_actual_cost if assessed_actual_cost > 0 else None
+    cpi = assessed_earned_value / assessed_actual_cost if assessed_actual_cost > 0 else None
     eac = assessed_eac if assessed_count else None
     return {
         "actual_revenue": float(actual["actual_revenue"] or 0),
@@ -86,6 +88,7 @@ def finance_performance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
         "cost_budget_linked": total_linked_cost_budget,
         "cost_budget_unallocated": budgets["cost"]["unallocated"],
         "earned_value_cost": earned_value,
+        "assessed_earned_value_cost": assessed_earned_value,
         "assessed_budget": assessed_budget,
         "assessed_actual_cost": assessed_actual_cost,
         "unassessed_budget": unassessed_budget,
