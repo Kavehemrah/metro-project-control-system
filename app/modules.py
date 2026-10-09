@@ -1399,8 +1399,9 @@ class FinancePage(QWidget):
         actual_title.setStyleSheet(f"font-size:17px;font-weight:600;color:{TEXT};")
         layout.addWidget(actual_title)
         actual_note = QLabel(
-            "این دفتر از مبالغ برنامه‌ای جداست. ثبت هزینه یا درآمد واقعی نیازمند ورود دستی اطلاعات معتبر است؛ "
-            "برآورد EAC فقط برای فعالیت‌هایی محاسبه می‌شود که بودجه هزینه، پیشرفت و هزینه واقعی تخصیص‌یافته داشته باشند."
+            "ثبت روزانه هزینه‌های عادی لازم نیست. ریز هزینه پایه هر فعالیت را در صفحه «برآورد هزینه و منابع فعالیت» تعریف کنید؛ "
+            "این دفتر برای هزینه‌های اضافه/پیش‌بینی‌نشده (مثل لودر اضافی) و ثبت‌های واقعی تجمیعی است. "
+            "برآورد EAC فقط وقتی محاسبه می‌شود که بودجه، پیشرفت و هزینه واقعی کافی باشد."
         )
         actual_note.setWordWrap(True)
         actual_note.setStyleSheet(f"color:{MUTED};")
@@ -1510,6 +1511,7 @@ class FinancePage(QWidget):
             f"واقعی ثبت‌شده: درآمد {performance['actual_revenue']:,.0f} ریال | "
             f"هزینه {performance['actual_cost']:,.0f} ریال | "
             f"خالص {performance['actual_net']:,.0f} ریال. "
+            f"هزینه پیش‌بینی‌نشده ثبت‌شده: {performance['unplanned_actual_cost']:,.0f} ریال. "
             f"ارزش کسب‌شده هزینه (EV): {performance['earned_value_cost']:,.0f} ریال؛ "
             f"CPI: {cpi_text}. {eac_text}. "
             f"بودجه هزینه ارزیابی‌نشده: {performance['unassessed_budget']:,.0f} ریال."
@@ -1555,12 +1557,29 @@ class FinancePage(QWidget):
             self.summary.setText("اطلاعات مالی ثبت نشده است.")
         revenue = forecast["revenue"]
         cost = forecast["cost"]
+        revenue_reference = revenue.get("summary_reference_amount", 0.0)
+        revenue_difference = revenue.get("summary_reconciliation_difference")
+        cost_reference = cost.get("summary_reference_amount", 0.0)
+        cost_difference = cost.get("summary_reconciliation_difference")
+        reference_note = ""
+        if revenue_reference:
+            reference_note += (
+                f" درآمد کل در خلاصه Excel {revenue_reference:,.0f} ریال است؛ "
+                f"اختلاف آن با جمع نرخ‌های درآمد فعالیت‌ها "
+                f"{revenue_difference:,.0f} ریال است. این دو جمع نشده‌اند تا دوباره‌شماری نشود."
+            )
+        if cost_reference:
+            reference_note += (
+                f" هزینه خلاصه Excel {cost_reference:,.0f} ریال و اختلاف آن با ریز هزینه‌های "
+                f"واحدمحور فعالیت‌ها {cost_difference:,.0f} ریال است."
+            )
         self.forecast_summary.setText(
-            "ارزش پیشرفت وزنی از مبالغ تخصیص‌یافته: "
-            f"درآمد {revenue['earned_to_date']:,.0f} از مبلغ تخصیص‌یافته {revenue['linked_budget']:,.0f} ریال؛ "
-            f"هزینه {cost['earned_to_date']:,.0f} از {cost['linked_budget']:,.0f} ریال. "
-            f"مبالغ بدون تخصیص: درآمد {revenue['unallocated_amount']:,.0f} و هزینه {cost['unallocated_amount']:,.0f} ریال. "
-            "این محاسبه بودجه/مبلغ برنامه‌ای را بر اساس درصد پیشرفت وزن می‌دهد و جایگزین ثبت هزینه و درآمد واقعی نیست."
+            "مبنای برآورد: بهای واحد و ضریب هزینه فعالیت، به همراه ردیف‌های تخصیص‌یافته موجود. "
+            f"درآمد پیشرفت‌وزن‌شده {revenue['earned_to_date']:,.0f} از {revenue['linked_budget']:,.0f} ریال؛ "
+            f"هزینه پیشرفت‌وزن‌شده {cost['earned_to_date']:,.0f} از {cost['linked_budget']:,.0f} ریال. "
+            f"بدون تخصیص مشخص: درآمد {revenue['unallocated_amount']:,.0f} و هزینه {cost['unallocated_amount']:,.0f} ریال. "
+            + reference_note +
+            " این ارقام بودجه/برآورد هستند و جایگزین ثبت هزینه یا درآمد واقعی نیستند."
         )
 
     def save_allocations(self):
