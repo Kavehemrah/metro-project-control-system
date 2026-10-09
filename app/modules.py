@@ -359,7 +359,62 @@ class ActivityPage(RecordPage):
             self.delete_button.setText("حذف عملکرد")
         else:
             self.add_button.setText("افزودن فعالیت")
+
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("فیلتر موقعیت:"))
+        self.position_filter = QComboBox()
+        self.position_filter.addItem("همه موقعیت‌ها", None)
+        filter_layout.addWidget(self.position_filter)
+        filter_layout.addWidget(QLabel("فیلتر فعالیت:"))
+        self.activity_filter = QComboBox()
+        self.activity_filter.addItem("همه فعالیت‌ها", None)
+        self.activity_filter.setMinimumWidth(250)
+        filter_layout.addWidget(self.activity_filter)
+        self.search_filter = QLineEdit()
+        self.search_filter.setPlaceholderText("جستجوی متن در موقعیت، جبهه یا شرح فعالیت")
+        filter_layout.addWidget(self.search_filter, 1)
+        self.layout().insertLayout(3, filter_layout)
+        self.position_filter.currentIndexChanged.connect(self.refresh)
+        self.activity_filter.currentIndexChanged.connect(self.refresh)
+        self.search_filter.textChanged.connect(self.refresh)
+        self._updating_filter_choices = False
         self.refresh()
+
+    def _populate_activity_filters(self, records):
+        if not hasattr(self, "position_filter") or self._updating_filter_choices:
+            return
+        self._updating_filter_choices = True
+        try:
+            old_position = self.position_filter.currentData()
+            old_activity = self.activity_filter.currentData()
+            self.position_filter.blockSignals(True)
+            self.activity_filter.blockSignals(True)
+            self.position_filter.clear()
+            self.position_filter.addItem("همه موقعیت‌ها", None)
+            positions = sorted({str(row["position"]).strip() for row in records if row["position"]})
+            for position in positions:
+                self.position_filter.addItem(position, position)
+            position_index = self.position_filter.findData(old_position)
+            self.position_filter.setCurrentIndex(position_index if position_index >= 0 else 0)
+            selected_position = self.position_filter.currentData()
+
+            candidates = [
+                row for row in records
+                if selected_position is None or (row["position"] or "").strip() == selected_position
+            ]
+            self.activity_filter.clear()
+            self.activity_filter.addItem("همه فعالیت‌ها", None)
+            for row in candidates:
+                prefix = f"{row['row_no']} - " if row["row_no"] is not None else f"ID {row['id']} - "
+                location = " / ".join(part for part in [row["position"], row["zone"]] if part)
+                suffix = f" ({location})" if location else ""
+                self.activity_filter.addItem(f"{prefix}{row['title'] or 'فعالیت'}{suffix}", row["id"])
+            activity_index = self.activity_filter.findData(old_activity)
+            self.activity_filter.setCurrentIndex(activity_index if activity_index >= 0 else 0)
+            self.position_filter.blockSignals(False)
+            self.activity_filter.blockSignals(False)
+        finally:
+            self._updating_filter_choices = False
 
     def prepare_values(self, values):
         values["source"] = "MANUAL"
@@ -371,10 +426,29 @@ class ActivityPage(RecordPage):
             schedule = calculate_schedule(conn, self.project_id, persist=True)
             if not schedule["cycle"]:
                 conn.commit()
-            self.records = conn.execute(
+            base_records = conn.execute(
                 self.query,
                 (self.project_id, *self.query_params),
             ).fetchall()
+            if hasattr(self, "position_filter"):
+                self._populate_activity_filters(base_records)
+                selected_position = self.position_filter.currentData()
+                selected_activity = self.activity_filter.currentData()
+                search_text = self.search_filter.text().strip().casefold()
+                self.records = [
+                    row for row in base_records
+                    if (selected_position is None or (row["position"] or "").strip() == selected_position)
+                    and (selected_activity is None or row["id"] == selected_activity)
+                    and (
+                        not search_text
+                        or search_text in " ".join(
+                            str(row[key] or "")
+                            for key in ("position", "zone", "title")
+                        ).casefold()
+                    )
+                ]
+            else:
+                self.records = base_records
             if hasattr(self, "schedule_notice"):
                 if schedule["cycle"]:
                     self.schedule_notice.setText("خطا: وابستگی فعالیت‌ها چرخه دارد؛ تاریخ‌های پیش‌بینی به‌روزرسانی نشدند. فعالیت‌ها: " + "، ".join(schedule.get("cycle_titles", [])))
