@@ -339,6 +339,8 @@ class ActivityPage(RecordPage):
         conn = connect()
         try:
             schedule = calculate_schedule(conn, self.project_id, persist=True)
+            if not schedule["cycle"]:
+                conn.commit()
             self.records = conn.execute(
                 self.query,
                 (self.project_id, *self.query_params),
