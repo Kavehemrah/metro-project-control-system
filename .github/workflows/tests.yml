@@ -9,6 +9,7 @@ on:
   pull_request:
     branches:
       - main
+      - feature/schedule-finance-resource-forecast
 
 jobs:
   pytest:
