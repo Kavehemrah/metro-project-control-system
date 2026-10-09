@@ -8,7 +8,7 @@ import jdatetime
 import openpyxl
 
 from app.db import connect
-from app.services.control import detect_finance_discrepancy, scan_formula_errors
+from app.services.control import activity_control, detect_finance_discrepancy, scan_formula_errors
 
 
 def _clean_text(value) -> str:
@@ -794,15 +794,12 @@ def _upsert_activity(conn, item, physical, row_no):
         )
 
     period_plan_total = sum(planned_by_period.values())
-    period_actual_total = sum(
-        actual_by_period.get(period, 0.0)
-        for period, period_plan in planned_by_period.items()
-        if period_plan > 0
-    )
     if period_plan_total <= 0 or not p.get("periods"):
         activity_status = "UNKNOWN"
     else:
-        achievement = period_actual_total / period_plan_total * 100.0
+        # Use the shared control calculation so retained manual actuals are
+        # included when status is recalculated during a workbook re-import.
+        achievement = activity_control(conn, activity_id)["achievement_pct"]
         if achievement >= 100:
             activity_status = "NORMAL"
         elif achievement >= 90:
