@@ -102,11 +102,12 @@ def sync_activity_revenue_from_physical(
 
 
 def activity_resource_forecast(conn: sqlite3.Connection, project_id: int = 1) -> list[dict]:
-    """Calculate resource demand from per-unit coefficients and planned quantities."""
+    """Calculate per-unit resource demand; use peak daily demand for workforce/equipment."""
     requirements = conn.execute(
         """
         SELECT rr.*, a.row_no, a.position, a.zone, a.title AS activity_title,
                a.unit AS activity_unit, a.quantity AS activity_quantity,
+               a.daily_target AS activity_daily_target,
                r.title AS current_resource_title, r.available AS resource_available,
                r.unit AS resource_unit
         FROM activity_resource_requirement rr
@@ -123,6 +124,7 @@ def activity_resource_forecast(conn: sqlite3.Connection, project_id: int = 1) ->
         item = dict(requirement)
         rate = max(0.0, float(item["quantity_per_activity_unit"] or 0))
         activity_id = int(item["activity_id"])
+        is_capacity = item["category"] in {"نیروی انسانی", "ماشین‌آلات"}
         plan_rows = conn.execute(
             """
             SELECT plan_date, SUM(quantity) AS quantity
@@ -132,14 +134,35 @@ def activity_resource_forecast(conn: sqlite3.Connection, project_id: int = 1) ->
             """,
             (activity_id,),
         ).fetchall()
-        period_qty: dict[str, float] = defaultdict(float)
-        for plan in plan_rows:
-            period = _report_period(str(plan["plan_date"]))
-            if period:
-                period_qty[period] += max(0.0, float(plan["quantity"] or 0))
 
+        period_qty: dict[str, float] = defaultdict(float)
+        daily_plan_quantities = []
+        for plan in plan_rows:
+            day_qty = max(0.0, float(plan["quantity"] or 0))
+            period = _report_period(str(plan["plan_date"])) or "دوره نامشخص"
+            if is_capacity:
+                # People and equipment are concurrent capacity, not monthly consumption:
+                # the peak planned daily output is the appropriate comparison.
+                period_qty[period] = max(period_qty[period], day_qty)
+            else:
+                period_qty[period] += day_qty
+            daily_plan_quantities.append(day_qty)
+
+        capacity_is_unknown = False
         if not period_qty:
-            period_qty["کل حجم فعالیت"] = max(0.0, float(item["activity_quantity"] or 0))
+            if is_capacity and float(item["activity_daily_target"] or 0) > 0:
+                period_qty["برآورد بر مبنای راندمان روزانه"] = max(
+                    0.0, float(item["activity_daily_target"])
+                )
+            elif is_capacity:
+                period_qty["ظرفیت روزانه نامشخص"] = max(
+                    0.0, float(item["activity_quantity"] or 0)
+                )
+                capacity_is_unknown = True
+            else:
+                period_qty["کل حجم فعالیت"] = max(
+                    0.0, float(item["activity_quantity"] or 0)
+                )
 
         supply_periods = {}
         if item["resource_id"] is not None:
@@ -159,7 +182,10 @@ def activity_resource_forecast(conn: sqlite3.Connection, project_id: int = 1) ->
             supply = supply_periods.get(period)
             available = None
             availability_basis = "unknown"
-            if supply and supply["available_qty"] is not None:
+            if capacity_is_unknown:
+                # A total activity volume is not a daily workforce/equipment count.
+                availability_basis = "daily_capacity_unknown"
+            elif supply and supply["available_qty"] is not None:
                 available = max(0.0, float(supply["available_qty"]))
                 availability_basis = "available_qty"
             elif supply and supply["opening_stock"] is not None and supply["purchase_qty"] is not None:
@@ -187,6 +213,7 @@ def activity_resource_forecast(conn: sqlite3.Connection, project_id: int = 1) ->
                 {
                     **item,
                     "period": period,
+                    "is_capacity_resource": is_capacity,
                     "planned_activity_qty": planned_activity_qty,
                     "required_qty": required_qty,
                     "available_qty": available,
