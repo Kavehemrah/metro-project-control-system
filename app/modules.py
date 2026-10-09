@@ -30,6 +30,7 @@ from .db import connect
 from .services.control import activity_control, update_activity_rollup
 from .services.dates import normalize_date
 from .services.forecast import calculate_schedule, forecast_finance
+from .services.actual_finance import finance_performance, record_actual
 from .ui import BLUE, MUTED, TEXT
 
 
@@ -79,6 +80,13 @@ class RecordDialog(QDialog):
                 widget.addItems(options["choices"])
                 if value in options["choices"]:
                     widget.setCurrentText(value)
+            elif kind == "activity":
+                widget = QComboBox()
+                widget.addItem("بدون تخصیص به فعالیت", None)
+                for activity_id, activity_label in options["choices"]:
+                    widget.addItem(activity_label, activity_id)
+                index = widget.findData(value)
+                widget.setCurrentIndex(index if index >= 0 else 0)
             else:
                 raise ValueError(f"Unsupported field type: {kind}")
             self.inputs[key] = (widget, kind, options)
@@ -99,6 +107,8 @@ class RecordDialog(QDialog):
                 result[key] = widget.text().strip()
             elif kind == "choice":
                 result[key] = widget.currentText()
+            elif kind == "activity":
+                result[key] = widget.currentData()
             else:
                 value = widget.value()
                 result[key] = value / 100 if kind == "percent" else value
