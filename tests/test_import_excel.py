@@ -468,3 +468,48 @@ def test_physical_progress_migration_allows_duplicate_descriptions_by_position(t
     assert tuple(legacy_activity) == (80, 75, 20)
     assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     conn.close()
+
+
+
+def test_reimport_removes_stale_excel_resources_and_risks_but_keeps_manual_rows(tmp_path):
+    workbook = Path(__file__).resolve().parents[1] / "metro-project-control-system.xlsx"
+    db_path = tmp_path / "stale-records.db"
+    import_workbook(str(workbook), db_path=db_path)
+
+    conn = connect(db_path)
+    conn.execute(
+        "INSERT INTO resource(project_id,category,title,source) VALUES(1,'مصالح','منبع قدیمی Excel','EXCEL')"
+    )
+    conn.execute(
+        "INSERT INTO resource(project_id,category,title,source) VALUES(1,'مصالح','منبع دستی حفظ‌شونده','MANUAL')"
+    )
+    conn.execute(
+        "INSERT INTO risk(project_id,category,title,source) VALUES(1,'آزمایشی','ریسک قدیمی Excel','EXCEL')"
+    )
+    conn.execute(
+        "INSERT INTO risk(project_id,category,title,source) VALUES(1,'آزمایشی','ریسک دستی حفظ‌شونده','MANUAL')"
+    )
+    conn.commit()
+    conn.close()
+
+    import_workbook(str(workbook), db_path=db_path)
+
+    conn = connect(db_path)
+    stale_resource = conn.execute(
+        "SELECT COUNT(*) FROM resource WHERE title='منبع قدیمی Excel'"
+    ).fetchone()[0]
+    manual_resource = conn.execute(
+        "SELECT COUNT(*) FROM resource WHERE title='منبع دستی حفظ‌شونده' AND source='MANUAL'"
+    ).fetchone()[0]
+    stale_risk = conn.execute(
+        "SELECT COUNT(*) FROM risk WHERE title='ریسک قدیمی Excel'"
+    ).fetchone()[0]
+    manual_risk = conn.execute(
+        "SELECT COUNT(*) FROM risk WHERE title='ریسک دستی حفظ‌شونده' AND source='MANUAL'"
+    ).fetchone()[0]
+    conn.close()
+
+    assert stale_resource == 0
+    assert manual_resource == 1
+    assert stale_risk == 0
+    assert manual_risk == 1
