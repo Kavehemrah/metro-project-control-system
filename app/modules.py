@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from .db import connect
-from .services.control import activity_control
+from .services.control import activity_control, update_activity_rollup
 from .ui import BLUE, MUTED, TEXT
 
 
@@ -293,6 +293,7 @@ class ActivityPage(RecordPage):
             ("zone", "جبهه", None),
             ("title", "فعالیت", None),
             ("quantity", "حجم کل", lambda v, _r: f"{v or 0:,.2f}"),
+            ("plan_remaining_qty", "مانده برنامه", lambda v, _r: f"{v or 0:,.2f}"),
             ("remaining_qty", "باقی‌مانده", lambda v, _r: f"{v or 0:,.2f}"),
             ("unit", "واحد", None),
             ("start_date", "شروع", None),
@@ -321,6 +322,10 @@ class ActivityPage(RecordPage):
             self.add_button.setText("افزودن فعالیت")
         self.refresh()
 
+    def prepare_values(self, values):
+        values["source"] = "MANUAL"
+        return values
+
     def refresh(self):
         conn = connect()
         try:
@@ -338,6 +343,7 @@ class ActivityPage(RecordPage):
                     record["zone"],
                     record["title"],
                     f"{record['quantity'] or 0:,.2f}",
+                    f"{record['plan_remaining_qty'] or 0:,.2f}",
                     f"{record['remaining_qty'] or 0:,.2f}",
                     record["unit"],
                     record["start_date"],
@@ -387,59 +393,7 @@ class ActivityPage(RecordPage):
                 (record["id"], values["actual_date"], values["quantity"], values["notes"]),
             )
 
-            totals = conn.execute(
-                """
-                SELECT
-                    COALESCE((SELECT SUM(quantity) FROM activity_daily_plan WHERE activity_id=?),0) planned,
-                    COALESCE((SELECT SUM(quantity) FROM activity_daily_actual WHERE activity_id=?),0) actual
-                """,
-                (record["id"], record["id"]),
-            ).fetchone()
-            actual = float(totals["actual"] or 0)
-            total = float(record["quantity"] or 0)
-            planned = float(totals["planned"] or 0)
-            progress = actual / total if total else 0
-            achievement = actual / planned * 100 if planned else 0
-
-            conn.execute(
-                """
-                UPDATE activity
-                SET actual_qty=?, planned_qty=?, progress=?,
-                    status=CASE
-                        WHEN ? >= 100 THEN 'NORMAL'
-                        WHEN ? >= 90 THEN 'WARNING'
-                        ELSE 'CRITICAL'
-                    END
-                WHERE id=? AND project_id=?
-                """,
-                (
-                    actual,
-                    planned,
-                    progress,
-                    achievement,
-                    achievement,
-                    record["id"],
-                    self.project_id,
-                ),
-            )
-
-            project_totals = conn.execute(
-                """
-                SELECT COALESCE(SUM(quantity),0) total_qty,
-                       COALESCE(SUM(actual_qty),0) actual_qty
-                FROM activity
-                WHERE project_id=?
-                """,
-                (self.project_id,),
-            ).fetchone()
-            project_progress = (
-                project_totals["actual_qty"] / project_totals["total_qty"]
-                if project_totals["total_qty"] else 0
-            )
-            conn.execute(
-                "UPDATE kpi SET physical_progress=? WHERE project_id=?",
-                (project_progress, self.project_id),
-            )
+            update_activity_rollup(conn, record["id"])
             conn.commit()
         finally:
             conn.close()
@@ -471,56 +425,7 @@ class ActivityPage(RecordPage):
         conn = connect()
         try:
             conn.execute("DELETE FROM activity_daily_actual WHERE activity_id=?", (record["id"],))
-            totals = conn.execute(
-                """
-                SELECT
-                    COALESCE((SELECT SUM(quantity) FROM activity_daily_plan WHERE activity_id=?),0) planned,
-                    COALESCE((SELECT SUM(quantity) FROM activity_daily_actual WHERE activity_id=?),0) actual
-                """,
-                (record["id"], record["id"]),
-            ).fetchone()
-            actual = float(totals["actual"] or 0)
-            planned = float(totals["planned"] or 0)
-            total = float(record["quantity"] or 0)
-            achievement = actual / planned * 100 if planned else 0
-            conn.execute(
-                """
-                UPDATE activity
-                SET actual_qty=?, planned_qty=?, progress=?,
-                    status=CASE
-                        WHEN ? >= 100 THEN 'NORMAL'
-                        WHEN ? >= 90 THEN 'WARNING'
-                        ELSE 'CRITICAL'
-                    END
-                WHERE id=? AND project_id=?
-                """,
-                (
-                    actual,
-                    planned,
-                    actual / total if total else 0,
-                    achievement,
-                    achievement,
-                    record["id"],
-                    self.project_id,
-                ),
-            )
-            project_totals = conn.execute(
-                """
-                SELECT COALESCE(SUM(quantity),0) total_qty,
-                       COALESCE(SUM(actual_qty),0) actual_qty
-                FROM activity
-                WHERE project_id=?
-                """,
-                (self.project_id,),
-            ).fetchone()
-            project_progress = (
-                project_totals["actual_qty"] / project_totals["total_qty"]
-                if project_totals["total_qty"] else 0
-            )
-            conn.execute(
-                "UPDATE kpi SET physical_progress=? WHERE project_id=?",
-                (project_progress, self.project_id),
-            )
+            update_activity_rollup(conn, record["id"])
             conn.commit()
         finally:
             conn.close()
@@ -544,19 +449,35 @@ RESOURCE_FIELDS = [
 class ResourcePage(RecordPage):
     def __init__(self, title, category):
         self.category = category
-        query = "SELECT * FROM resource WHERE project_id=?"
+        query = """
+            SELECT resource.*,
+                   COALESCE((
+                       SELECT GROUP_CONCAT(
+                           resource_period.period || ': ' ||
+                           printf('%.2f', resource_period.required_qty),
+                           ' | '
+                       )
+                       FROM resource_period
+                       WHERE resource_period.resource_id=resource.id
+                         AND resource_period.source='EXCEL'
+                   ), '') AS period_summary
+            FROM resource WHERE resource.project_id=?
+        """
         if category:
-            query += " AND category=?"
-        query += " ORDER BY category, title"
+            query += " AND resource.category=?"
+        query += " ORDER BY resource.category, resource.title"
         super().__init__(
             title,
             query,
             [
                 ("category", "دسته", None),
                 ("title", "عنوان", None),
-                ("required", "موردنیاز", lambda value, _record: f"{value:,.2f}"),
-                ("available", "موجود", lambda value, _record: f"{value:,.2f}"),
+                ("required", "موردنیاز", lambda value, _record: f"{value:,.2f}" if value is not None else "نامشخص"),
+                ("available", "موجود", lambda value, _record: f"{value:,.2f}" if value is not None else "نامشخص"),
                 ("unit", "واحد", None),
+                ("supply_type", "نوع تأمین", None),
+                ("unit_price", "بهای واحد (ریال)", lambda value, _record: f"{value:,.0f}" if value is not None else "نامشخص"),
+                ("period_summary", "نیاز دوره‌ای", None),
             ],
             RESOURCE_FIELDS,
             "resource",
@@ -568,6 +489,10 @@ class ResourcePage(RecordPage):
         if self.category:
             initial["category"] = self.category
         return super()._dialog(title, initial)
+
+    def prepare_values(self, values):
+        values["source"] = "MANUAL"
+        return values
 
 
 RISK_FIELDS = [
@@ -604,6 +529,7 @@ class RiskPage(RecordPage):
 
     def prepare_values(self, values):
         values["score"] = values["probability"] * values["impact"] * values["control"]
+        values["source"] = "MANUAL"
         return values
 
 
@@ -743,7 +669,9 @@ class SettingsPage(QWidget):
         title = QLabel("تنظیمات و ورود اطلاعات")
         title.setStyleSheet(f"font-size:21px;font-weight:700;color:{TEXT};")
         layout.addWidget(title)
-        description = QLabel("برای جایگزینی اطلاعات مالی داشبورد، فایل Excel پروژه را وارد کنید.")
+        description = QLabel(
+            "داده‌های Excel با فایل جدید بروزرسانی می‌شوند؛ اطلاعاتی که در نرم‌افزار دستی ثبت یا ویرایش شده‌اند حفظ می‌شوند."
+        )
         description.setStyleSheet(f"color:{MUTED};")
         layout.addWidget(description)
         note = QLabel(

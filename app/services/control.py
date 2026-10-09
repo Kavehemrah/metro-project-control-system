@@ -11,11 +11,15 @@ def planned_actual_totals(conn: sqlite3.Connection, activity_id: int) -> tuple[f
         "SELECT COALESCE(SUM(quantity), 0) FROM activity_daily_plan WHERE activity_id=?",
         (activity_id,),
     ).fetchone()[0]
-    actual = conn.execute(
+    manual_actual = conn.execute(
         "SELECT COALESCE(SUM(quantity), 0) FROM activity_daily_actual WHERE activity_id=?",
         (activity_id,),
     ).fetchone()[0]
-    return float(planned or 0), float(actual or 0)
+    baseline = conn.execute(
+        "SELECT COALESCE(baseline_actual_qty, actual_qty, 0) FROM activity WHERE id=?",
+        (activity_id,),
+    ).fetchone()[0]
+    return float(planned or 0), float(baseline or 0) + float(manual_actual or 0)
 
 
 def activity_control(conn: sqlite3.Connection, activity_id: int) -> dict:
@@ -42,6 +46,34 @@ def activity_control(conn: sqlite3.Connection, activity_id: int) -> dict:
         "baseline_qty": baseline_qty,
         "remaining_qty": max(0.0, total - actual),
     }
+
+
+def update_activity_rollup(conn: sqlite3.Connection, activity_id: int) -> dict:
+    control = activity_control(conn, activity_id)
+    conn.execute(
+        """
+        UPDATE activity
+        SET actual_qty=?, planned_qty=?, progress=?, remaining_qty=?,
+            status=CASE
+                WHEN ? <= 0 THEN status
+                WHEN ? >= 100 THEN 'NORMAL'
+                WHEN ? >= 90 THEN 'WARNING'
+                ELSE 'CRITICAL'
+            END
+        WHERE id=?
+        """,
+        (
+            control["actual_qty"],
+            control["planned_qty"],
+            control["physical_progress_pct"] / 100,
+            control["remaining_qty"],
+            control["planned_qty"],
+            control["achievement_pct"],
+            control["achievement_pct"],
+            activity_id,
+        ),
+    )
+    return control
 
 
 def project_finance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
@@ -108,6 +140,15 @@ def scan_formula_errors(workbook, cached_workbook=None) -> list[dict]:
                     else None
                 )
                 cached_value = cached_cell.value if cached_cell is not None else None
+                if cell.data_type == "f" and cached_cell is not None and cached_value is None:
+                    errors.append(
+                        {
+                            "title": "فرمول Excel بدون مقدار محاسبه‌شده",
+                            "detail": f"{sheet.title}!{cell.coordinate}: formula has no cached result",
+                            "severity": "HIGH",
+                        }
+                    )
+                    continue
                 texts = [
                     text.upper()
                     for text in (value, cached_value)
@@ -225,7 +266,7 @@ def critical_activities(
 def infer_activity_dependencies(conn: sqlite3.Connection, project_id: int = 1) -> list[dict]:
     rows = conn.execute(
         "SELECT id, row_no, position, zone, title, start_date, finish_date FROM activity "
-        "WHERE project_id=? ORDER BY row_no, id",
+        "WHERE project_id=? AND source='EXCEL' ORDER BY row_no, id",
         (project_id,),
     ).fetchall()
 
@@ -278,8 +319,8 @@ def infer_activity_dependencies(conn: sqlite3.Connection, project_id: int = 1) -
             conn.execute(
                 """
                 INSERT OR IGNORE INTO activity_dependency(
-                    project_id, activity_id, predecessor_activity_id, relation_type, lag_days, notes
-                ) VALUES (?, ?, ?, 'finish_to_start', ?, ?)
+                    project_id, activity_id, predecessor_activity_id, relation_type, lag_days, notes, source
+                ) VALUES (?, ?, ?, 'finish_to_start', ?, ?, 'INFERRED')
                 """,
                 (
                     project_id,

@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS monthly_finance (
     month TEXT NOT NULL,
     revenue REAL DEFAULT 0,
     cost REAL DEFAULT 0,
+    source TEXT DEFAULT 'EXCEL',
     FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE
 );
 
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS activity (
     zone TEXT,
     title TEXT,
     quantity REAL DEFAULT 0,
+    plan_remaining_qty REAL DEFAULT 0,
     remaining_qty REAL DEFAULT 0,
     unit TEXT,
     start_date TEXT,
@@ -51,9 +53,11 @@ CREATE TABLE IF NOT EXISTS activity (
     daily_target REAL DEFAULT 0,
     planned_qty REAL DEFAULT 0,
     actual_qty REAL DEFAULT 0,
+    baseline_actual_qty REAL DEFAULT 0,
     progress REAL DEFAULT 0,
     delay_days INTEGER DEFAULT 0,
     status TEXT DEFAULT 'NORMAL',
+    source TEXT DEFAULT 'MANUAL',
     forecast_finish TEXT,
     notes TEXT,
     FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE
@@ -97,9 +101,12 @@ CREATE TABLE IF NOT EXISTS activity_period (
 CREATE TABLE IF NOT EXISTS physical_progress_entry (
     id INTEGER PRIMARY KEY,
     project_id INTEGER NOT NULL,
+    source_row_no INTEGER,
+    position TEXT,
     zone TEXT,
     work_package TEXT NOT NULL,
     unit TEXT,
+    unit_rate REAL DEFAULT 0,
     total_qty REAL DEFAULT 0,
     opening_qty REAL DEFAULT 0,
     actual_qty REAL DEFAULT 0,
@@ -107,7 +114,7 @@ CREATE TABLE IF NOT EXISTS physical_progress_entry (
     period TEXT NOT NULL,
     source TEXT DEFAULT 'EXCEL',
     FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE,
-    UNIQUE(project_id, zone, work_package, period)
+    UNIQUE(project_id, source_row_no, period)
 );
 
 CREATE TABLE IF NOT EXISTS activity_dependency (
@@ -118,6 +125,7 @@ CREATE TABLE IF NOT EXISTS activity_dependency (
     relation_type TEXT DEFAULT 'finish_to_start',
     lag_days INTEGER DEFAULT 0,
     notes TEXT,
+    source TEXT DEFAULT 'INFERRED',
     FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE,
     FOREIGN KEY(activity_id) REFERENCES activity(id) ON DELETE CASCADE,
     FOREIGN KEY(predecessor_activity_id) REFERENCES activity(id) ON DELETE CASCADE,
@@ -156,7 +164,24 @@ CREATE TABLE IF NOT EXISTS resource (
     required REAL DEFAULT 0,
     available REAL DEFAULT 0,
     unit TEXT,
+    supply_type TEXT,
+    unit_price REAL,
+    source TEXT DEFAULT 'MANUAL',
     FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS resource_period (
+    id INTEGER PRIMARY KEY,
+    resource_id INTEGER NOT NULL,
+    period TEXT NOT NULL,
+    required_qty REAL DEFAULT 0,
+    available_qty REAL,
+    opening_stock REAL,
+    purchase_qty REAL,
+    unit_price REAL,
+    source TEXT DEFAULT 'MANUAL',
+    FOREIGN KEY(resource_id) REFERENCES resource(id) ON DELETE CASCADE,
+    UNIQUE(resource_id, period, source)
 );
 
 CREATE TABLE IF NOT EXISTS risk (
@@ -171,6 +196,7 @@ CREATE TABLE IF NOT EXISTS risk (
     control INTEGER,
     score INTEGER,
     action TEXT,
+    source TEXT DEFAULT 'MANUAL',
     FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE
 );
 
@@ -180,6 +206,7 @@ CREATE TABLE IF NOT EXISTS discrepancy (
     title TEXT,
     detail TEXT,
     severity TEXT,
+    source TEXT DEFAULT 'MANUAL',
     FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE
 );
 """
@@ -192,6 +219,7 @@ def _add_missing_columns(conn):
     }
     additions = {
         "position": "TEXT",
+        "plan_remaining_qty": "REAL DEFAULT 0",
         "remaining_qty": "REAL DEFAULT 0",
         "start_date": "TEXT",
         "finish_date": "TEXT",
@@ -199,12 +227,56 @@ def _add_missing_columns(conn):
         "daily_target": "REAL DEFAULT 0",
         "planned_qty": "REAL DEFAULT 0",
         "actual_qty": "REAL DEFAULT 0",
+        "baseline_actual_qty": "REAL DEFAULT 0",
         "forecast_finish": "TEXT",
         "notes": "TEXT",
+        "source": "TEXT DEFAULT 'MANUAL'",
     }
     for name, definition in additions.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE activity ADD COLUMN {name} {definition}")
+            if name == "plan_remaining_qty":
+                conn.execute(
+                    "UPDATE activity SET plan_remaining_qty=COALESCE(remaining_qty,0)"
+                )
+            if name == "baseline_actual_qty":
+                conn.execute(
+                    """
+                    UPDATE activity
+                    SET baseline_actual_qty=MAX(
+                        0,
+                        COALESCE(actual_qty,0) - COALESCE((
+                            SELECT SUM(daily.quantity)
+                            FROM activity_daily_actual AS daily
+                            WHERE daily.activity_id=activity.id AND daily.source='MANUAL'
+                        ),0)
+                    ),
+                    remaining_qty=MAX(0,COALESCE(quantity,0)-COALESCE(actual_qty,0))
+                    """
+                )
+            if name == "source":
+                conn.execute(
+                    "UPDATE activity SET source='EXCEL' WHERE row_no IS NOT NULL"
+                )
+
+    monthly_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(monthly_finance)").fetchall()
+    }
+    if "source" not in monthly_columns:
+        conn.execute("ALTER TABLE monthly_finance ADD COLUMN source TEXT DEFAULT 'EXCEL'")
+
+    physical_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(physical_progress_entry)").fetchall()
+    }
+    for name, definition in {
+        "source_row_no": "INTEGER",
+        "position": "TEXT",
+        "unit_rate": "REAL DEFAULT 0",
+    }.items():
+        if name not in physical_columns:
+            conn.execute(f"ALTER TABLE physical_progress_entry ADD COLUMN {name} {definition}")
 
     risk_columns = {
         row["name"]
@@ -213,18 +285,91 @@ def _add_missing_columns(conn):
     for name, definition in {
         "consequence": "TEXT",
         "existing_controls": "TEXT",
+        "source": "TEXT DEFAULT 'MANUAL'",
     }.items():
         if name not in risk_columns:
             conn.execute(f"ALTER TABLE risk ADD COLUMN {name} {definition}")
 
+    for table, definition in [
+        ("resource", "source TEXT DEFAULT 'MANUAL'"),
+        ("resource", "supply_type TEXT"),
+        ("resource", "unit_price REAL"),
+        ("discrepancy", "source TEXT DEFAULT 'MANUAL'"),
+        ("activity_dependency", "source TEXT DEFAULT 'INFERRED'"),
+    ]:
+        columns = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        name = definition.split()[0]
+        if name not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
 
-def connect():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+
+def _migrate_physical_progress_identity(conn):
+    for index in conn.execute("PRAGMA index_list(physical_progress_entry)").fetchall():
+        if not index["unique"]:
+            continue
+        columns = tuple(
+            row["name"]
+            for row in conn.execute(
+                f"PRAGMA index_info('{index['name']}')"
+            ).fetchall()
+        )
+        if columns != ("project_id", "zone", "work_package", "period"):
+            continue
+
+        conn.execute("BEGIN")
+        conn.execute(
+            """
+            CREATE TABLE physical_progress_entry_new (
+                id INTEGER PRIMARY KEY,
+                project_id INTEGER NOT NULL,
+                source_row_no INTEGER,
+                position TEXT,
+                zone TEXT,
+                work_package TEXT NOT NULL,
+                unit TEXT,
+                unit_rate REAL DEFAULT 0,
+                total_qty REAL DEFAULT 0,
+                opening_qty REAL DEFAULT 0,
+                actual_qty REAL DEFAULT 0,
+                remaining_qty REAL DEFAULT 0,
+                period TEXT NOT NULL,
+                source TEXT DEFAULT 'EXCEL',
+                FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE,
+                UNIQUE(project_id, source_row_no, period)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO physical_progress_entry_new(
+                id,project_id,source_row_no,position,zone,work_package,unit,unit_rate,
+                total_qty,opening_qty,actual_qty,remaining_qty,period,source
+            )
+            SELECT id,project_id,source_row_no,position,zone,work_package,unit,unit_rate,
+                   total_qty,opening_qty,actual_qty,remaining_qty,period,source
+            FROM physical_progress_entry
+            """
+        )
+        conn.execute("DROP TABLE physical_progress_entry")
+        conn.execute(
+            "ALTER TABLE physical_progress_entry_new RENAME TO physical_progress_entry"
+        )
+        conn.commit()
+        break
+
+
+def connect(db_path: str | Path | None = None):
+    path = Path(db_path) if db_path is not None else DB_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
     _add_missing_columns(conn)
+    _migrate_physical_progress_identity(conn)
     conn.commit()
     return conn
 

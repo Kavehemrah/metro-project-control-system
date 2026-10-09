@@ -163,15 +163,7 @@ class Dashboard(QWidget):
         controls = aggregate_activity_control(conn, 1)
         conn.close()
 
-        total_qty = sum(item["quantity"] for item in controls)
-        total_planned = sum(item["planned_qty"] for item in controls)
-        total_actual = sum(item["actual_qty"] for item in controls)
-        physical_actual = (
-            total_actual / total_qty
-            if total_actual and total_qty
-            else (kpi["physical_progress"] if kpi else 0)
-        )
-        physical_planned = total_planned / total_qty if total_qty else physical_actual
+        physical_actual = kpi["physical_progress"] if kpi else 0
 
         root.setContentsMargins(22, 20, 22, 24)
         root.setSpacing(16)
@@ -227,9 +219,9 @@ class Dashboard(QWidget):
         charts = QHBoxLayout()
         charts.addWidget(
             MiniChart(
-                [physical_planned * 100, physical_actual * 100],
-                ["برنامه", "عملکرد"],
-                "برنامه در برابر عملکرد",
+                [physical_actual * 100],
+                ["دوره"],
+                "پیشرفت فیزیکی ثبت‌شده از اکسل",
             )
         )
         charts.addWidget(
