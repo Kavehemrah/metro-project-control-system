@@ -31,8 +31,15 @@ def test_critical_activities_prioritize_status_and_delay():
             start_date TEXT,
             finish_date TEXT
         );
-        CREATE TABLE activity_daily_plan (activity_id INTEGER, quantity REAL);
-        CREATE TABLE activity_daily_actual (activity_id INTEGER, quantity REAL);
+        CREATE TABLE activity_daily_plan (
+            activity_id INTEGER, plan_date TEXT, quantity REAL, source TEXT DEFAULT 'EXCEL'
+        );
+        CREATE TABLE activity_daily_actual (
+            activity_id INTEGER, actual_date TEXT, quantity REAL, source TEXT DEFAULT 'MANUAL', notes TEXT
+        );
+        CREATE TABLE activity_period (
+            activity_id INTEGER, period TEXT, planned_qty REAL, actual_qty REAL, source TEXT DEFAULT 'EXCEL'
+        );
         INSERT INTO activity VALUES
             (1, 1, 1, 'عادی', 'جبهه ۱', 'NORMAL', 0, 100, 0, 40, 0, 0, 0, 0.6, 10, NULL, NULL),
             (2, 1, 2, 'هشدار', 'جبهه ۱', 'WARNING', 4, 100, 0, 60, 0, 0, 0, 0.4, 10, NULL, NULL),
@@ -41,8 +48,12 @@ def test_critical_activities_prioritize_status_and_delay():
     )
 
     result = critical_activities(conn)
-    conn.execute("INSERT INTO activity_daily_plan VALUES(3, 30)")
-    conn.execute("INSERT INTO activity_daily_actual VALUES(3, 7)")
+    conn.execute(
+        "INSERT INTO activity_daily_plan(activity_id,plan_date,quantity,source) VALUES(3,'2026-10-01',30,'MANUAL')"
+    )
+    conn.execute(
+        "INSERT INTO activity_daily_actual(activity_id,actual_date,quantity,source) VALUES(3,'2026-10-01',7,'MANUAL')"
+    )
     updated_control = update_activity_rollup(conn, 3)
     updated_status = conn.execute("SELECT status FROM activity WHERE id=3").fetchone()[0]
 
@@ -54,7 +65,11 @@ def test_critical_activities_prioritize_status_and_delay():
     assert updated_control["actual_qty"] == 27
     assert updated_control["remaining_qty"] == 73
     assert updated_control["physical_progress_pct"] == 27
-    assert updated_status == "WARNING"
+    # Period achievement uses the 7 units recorded during the plan window,
+    # not the 20-unit cumulative baseline plus those 7 units.
+    assert updated_control["period_actual_qty"] == 7
+    assert updated_control["achievement_pct"] < 90
+    assert updated_status == "CRITICAL"
     conn.close()
 
 

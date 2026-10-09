@@ -61,23 +61,10 @@ def planned_actual_totals(
     ).fetchone()[0]
 
     activity = conn.execute(
-        "SELECT source, baseline_actual_qty, actual_qty FROM activity WHERE id=?",
+        "SELECT COALESCE(baseline_actual_qty, actual_qty, 0) FROM activity WHERE id=?",
         (activity_id,),
     ).fetchone()
-    if activity is None:
-        baseline_actual = 0.0
-    elif activity["source"] == "EXCEL":
-        baseline_value = activity["baseline_actual_qty"]
-        if baseline_value is None:
-            baseline_value = activity["actual_qty"]
-        baseline_actual = float(baseline_value or 0)
-    else:
-        # Manual activities may have a directly entered actual quantity or a
-        # rollup previously updated from daily actual entries.
-        baseline_actual = max(
-            0.0, float(activity["actual_qty"] or 0) - manual_actual_total
-        )
-
+    baseline_actual = float(activity[0] or 0) if activity is not None else 0.0
     cumulative_actual = baseline_actual + manual_actual_total
     period_actual = float(excel_period_actual or 0) + float(manual_period_actual or 0)
     return float(planned or 0), period_actual, cumulative_actual
