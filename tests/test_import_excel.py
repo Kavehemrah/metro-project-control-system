@@ -167,6 +167,9 @@ def test_workbook_import_includes_resource_sheets(tmp_path):
             """
         )
     }
+    imported_activity_status = conn.execute(
+        "SELECT status FROM activity WHERE project_id=1 AND row_no=4"
+    ).fetchone()[0]
     conn.close()
 
     assert activities >= 10, "At least the major operational activities should be imported"
@@ -218,6 +221,7 @@ def test_workbook_import_includes_resource_sheets(tmp_path):
     assert math.isclose(contract_value, 2_856_172_028_562, abs_tol=0.1)
     assert planned_periods["مهر 1405"] == (864, 864, 100)
     assert planned_periods["آبان 1405"] == (295, 295, 100)
+    assert imported_activity_status == "NORMAL"
     assert math.isclose(detail_cost, 445_741_374_203.4047, abs_tol=0.1)
     assert 12_300_000_000 < detail_cost - financial_totals["cost"] < 12_400_000_000
     assert risk_score_mismatches == 0

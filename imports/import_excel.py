@@ -792,6 +792,28 @@ def _upsert_activity(conn, item, physical, row_no):
                 (actual / planned * 100) if planned else 0,
             ),
         )
+
+    period_plan_total = sum(planned_by_period.values())
+    period_actual_total = sum(
+        actual_by_period.get(period, 0.0)
+        for period, period_plan in planned_by_period.items()
+        if period_plan > 0
+    )
+    if period_plan_total <= 0 or not p.get("periods"):
+        activity_status = "UNKNOWN"
+    else:
+        achievement = period_actual_total / period_plan_total * 100.0
+        if achievement >= 100:
+            activity_status = "NORMAL"
+        elif achievement >= 90:
+            activity_status = "WARNING"
+        else:
+            activity_status = "CRITICAL"
+
+    conn.execute(
+        "UPDATE activity SET status=? WHERE id=? AND source='EXCEL'",
+        (activity_status, activity_id),
+    )
     return activity_id
 
 
@@ -1047,6 +1069,17 @@ def import_workbook(path, db_path: str | Path | None = None):
                 (
                     "پیشرفت فیزیکی بدون تطبیق یک‌به‌یک",
                     f"{unmatched_physical} بسته از شیت پیشرفت فیزیکی با عنوان فعالیت‌های برنامه عملیاتی تطبیق دقیق ندارند؛ داده خام جداگانه نگهداری شد و به فعالیتی نسبت داده نشد.",
+                    "MEDIUM",
+                ),
+            )
+
+        unmatched_operational = len(operational_keys - set(physical))
+        if unmatched_operational:
+            conn.execute(
+                "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
+                (
+                    "فعالیت‌های برنامه بدون تطبیق پیشرفت فیزیکی",
+                    f"{unmatched_operational} فعالیت از برنامه عملیاتی با شیت پیشرفت فیزیکی تطبیق نداشت؛ داده واقعی برای این فعالیت‌ها نامشخص است و وضعیت آن‌ها به‌صورت UNKNOWN نگهداری شد.",
                     "MEDIUM",
                 ),
             )
