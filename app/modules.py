@@ -296,8 +296,8 @@ ACTIVITY_FIELDS = [
     ("quantity", "حجم کل", "number", {"minimum": 0, "decimals": 2}),
     ("remaining_qty", "حجم باقی‌مانده", "number", {"minimum": 0, "decimals": 2}),
     ("unit", "واحد", "text", {}),
-    ("start_date", "شروع", "text", {}),
-    ("finish_date", "پایان", "text", {}),
+    ("start_date", "شروع", "date", {}),
+    ("finish_date", "پایان", "date", {}),
     ("duration_days", "مدت (روز)", "integer", {"minimum": 0, "maximum": 36500}),
     ("daily_target", "برنامه روزانه", "number", {"minimum": 0, "decimals": 2}),
     ("delay_days", "تأخیر (روز)", "integer", {"minimum": 0, "maximum": 36500}),
@@ -394,9 +394,9 @@ class ActivityPage(RecordPage):
                     f"{record['plan_remaining_qty'] or 0:,.2f}",
                     f"{record['remaining_qty'] or 0:,.2f}",
                     record["unit"],
-                    record["start_date"],
-                    record["finish_date"],
-                    record["forecast_finish"],
+                    format_date(record["start_date"]),
+                    format_date(record["finish_date"]),
+                    format_date(record["forecast_finish"]),
                     f"{record['daily_target'] or 0:,.2f}",
                     f"{control['planned_qty']:,.2f}",
                     f"{control['period_actual_qty']:,.2f}",
@@ -578,7 +578,7 @@ class ActivityPage(RecordPage):
             QMessageBox.information(self, "عملکرد روزانه", "برای این فعالیت عملکرد دستی ثبت نشده است.")
             return None
         labels = [
-            f"{row['actual_date']} | مقدار {float(row['quantity'] or 0):,.2f}"
+            f"{format_date(row['actual_date'])} | مقدار {float(row['quantity'] or 0):,.2f}"
             + (f" | {row['notes']}" if row["notes"] else "")
             for row in rows
         ]
@@ -591,7 +591,7 @@ class ActivityPage(RecordPage):
 
     def _record_actual(self, record, existing_actual=None):
         fields = [
-            ("actual_date", "تاریخ عملکرد (مثلاً 1405/07/15)", "text", {}),
+            ("actual_date", "تاریخ عملکرد", "date", {}),
             ("quantity", f"مقدار عملکرد ({record['unit'] or ''})", "number", {"minimum": 0, "decimals": 2}),
             ("notes", "توضیحات", "text", {}),
         ]
@@ -887,11 +887,11 @@ class FinancePage(QWidget):
         self.actual_table = QTableWidget()
         _configure_table(
             self.actual_table,
-            ["تاریخ", "دوره", "نوع", "شرح", "مبلغ (ریال)", "فعالیت مرتبط", "توضیحات"],
+            ["تاریخ", "دوره", "نوع", "شرح", "مبلغ (ریال)", "پیش‌بینی‌نشده", "فعالیت مرتبط", "توضیحات"],
         )
         layout.addWidget(self.actual_table)
         actual_actions = QHBoxLayout()
-        self.add_actual_button = QPushButton("ثبت درآمد/هزینه واقعی")
+        self.add_actual_button = QPushButton("ثبت هزینه/درآمد اضافی یا پیش‌بینی‌نشده")
         self.edit_actual_button = QPushButton("ویرایش رکورد واقعی")
         self.delete_actual_button = QPushButton("حذف رکورد واقعی")
         for button in (self.add_actual_button, self.edit_actual_button, self.delete_actual_button):
@@ -969,8 +969,8 @@ class FinancePage(QWidget):
                 if entry["activity_id"] is not None else "بدون تخصیص"
             )
             values = [
-                entry["entry_date"], entry["period"] or "", kind, entry["category"],
-                f"{float(entry['amount'] or 0):,.0f}", activity_label, entry["notes"] or "",
+                format_date(entry["entry_date"]), entry["period"] or "", kind, entry["category"],
+                f"{float(entry['amount'] or 0):,.0f}", "بله" if entry["is_unplanned"] else "خیر", activity_label, entry["notes"] or "",
             ]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
@@ -1085,18 +1085,20 @@ class FinancePage(QWidget):
             suffix = f" ({activity['zone']})" if activity["zone"] else ""
             choices.append((activity["id"], f"{prefix}{activity['title'] or 'فعالیت'}{suffix}"))
         initial = dict(existing or {})
+        initial["is_unplanned"] = "بله" if initial.get("is_unplanned") else "خیر"
         initial["entry_type"] = (
             "درآمد واقعی" if initial.get("entry_type") == "REVENUE"
             else "هزینه واقعی" if initial.get("entry_type") == "COST"
             else "هزینه واقعی"
         )
         fields = [
-            ("entry_date", "تاریخ (شمسی یا میلادی)", "text", {}),
+            ("entry_date", "تاریخ", "date", {}),
             ("period", "دوره گزارش", "text", {}),
             ("entry_type", "نوع رکورد", "choice", {"choices": ["درآمد واقعی", "هزینه واقعی"]}),
             ("category", "شرح / دسته", "text", {}),
             ("amount", "مبلغ (ریال)", "number", {"minimum": 0, "decimals": 0}),
             ("activity_id", "فعالیت مرتبط", "activity", {"choices": choices}),
+            ("is_unplanned", "هزینه پیش‌بینی‌نشده؟", "choice", {"choices": ["خیر", "بله"]}),
             ("notes", "توضیحات", "text", {}),
         ]
         dialog = RecordDialog("ثبت/ویرایش درآمد و هزینه واقعی", fields, initial, self)
@@ -1121,6 +1123,7 @@ class FinancePage(QWidget):
                     amount=values["amount"],
                     activity_id=values["activity_id"],
                     notes=values["notes"],
+                    is_unplanned=(values["is_unplanned"] == "بله"),
                     entry_id=existing["id"] if existing is not None else None,
                 )
                 conn.commit()
