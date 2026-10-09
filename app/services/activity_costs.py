@@ -57,7 +57,9 @@ def activity_cost_budgets(conn: sqlite3.Connection, project_id: int = 1) -> dict
         """,
         (project_id,),
     ).fetchall():
-        totals[int(row["activity_id"])] = max(0.0, float(row["total"] or 0))
+        total = max(0.0, float(row["total"] or 0))
+        if total > 0:
+            totals[int(row["activity_id"])] = total
     return dict(totals)
 
 
@@ -81,7 +83,21 @@ def sync_activity_revenue_from_physical(
         activity_id = activity_ids_by_key.get(key)
         unit_rate = max(0.0, float(item.get("unit_rate") or 0))
         total_qty = max(0.0, float(item.get("total") or 0))
-        if activity_id is None or unit_rate <= 0 or total_qty <= 0:
+        if unit_rate <= 0 or total_qty <= 0:
+            continue
+        if activity_id is None:
+            conn.execute(
+                """
+                INSERT INTO discrepancy(project_id,title,detail,severity,source)
+                VALUES(?,?,?,?, 'EXCEL')
+                """,
+                (
+                    project_id,
+                    "درآمد فعالیت بدون تطبیق",
+                    f"ردیف شیت پیشرفت فیزیکی {item.get('row_no', '?')}: «{item.get('position', '')} / {item.get('zone', '')} / {item.get('title', '')}» دارای بهای واحد درآمد و حجم است، اما فعالیت متناظر پیدا نشد؛ مبلغ به فعالیتی نسبت داده نشد.",
+                    "MEDIUM",
+                ),
+            )
             continue
         amount = unit_rate * total_qty
         conn.execute(
@@ -136,7 +152,6 @@ def activity_resource_forecast(conn: sqlite3.Connection, project_id: int = 1) ->
         ).fetchall()
 
         period_qty: dict[str, float] = defaultdict(float)
-        daily_plan_quantities = []
         for plan in plan_rows:
             day_qty = max(0.0, float(plan["quantity"] or 0))
             period = _report_period(str(plan["plan_date"])) or "دوره نامشخص"
@@ -146,7 +161,6 @@ def activity_resource_forecast(conn: sqlite3.Connection, project_id: int = 1) ->
                 period_qty[period] = max(period_qty[period], day_qty)
             else:
                 period_qty[period] += day_qty
-            daily_plan_quantities.append(day_qty)
 
         capacity_is_unknown = False
         if not period_qty:
@@ -177,6 +191,11 @@ def activity_resource_forecast(conn: sqlite3.Connection, project_id: int = 1) ->
                 supply_periods[str(supply["period"])] = dict(supply)
 
         default_available = item["resource_available"]
+        carry_inventory = (
+            max(0.0, float(default_available))
+            if not is_capacity and default_available is not None and not supply_periods
+            else None
+        )
         for period, planned_activity_qty in period_qty.items():
             required_qty = rate * planned_activity_qty
             supply = supply_periods.get(period)
@@ -194,11 +213,25 @@ def activity_resource_forecast(conn: sqlite3.Connection, project_id: int = 1) ->
                     float(supply["opening_stock"] or 0) + float(supply["purchase_qty"] or 0),
                 )
                 availability_basis = "opening_stock+purchase_qty"
+            elif is_capacity and default_available is not None:
+                available = max(0.0, float(default_available))
+                availability_basis = "resource.available"
+            elif carry_inventory is not None:
+                available = carry_inventory
+                availability_basis = "opening_inventory_carried_forward"
+            elif not is_capacity and supply_periods:
+                available = None
+                availability_basis = "period_supply_not_defined"
             elif default_available is not None:
                 available = max(0.0, float(default_available))
                 availability_basis = "resource.available"
 
             shortage = max(0.0, required_qty - available) if available is not None else None
+            if carry_inventory is not None:
+                # Treat the card's available quantity as total material stock for the
+                # whole horizon. Consume each period's requirement once to avoid
+                # showing the same inventory as available in every month.
+                carry_inventory = max(0.0, carry_inventory - required_qty)
             price = None
             if supply and supply.get("unit_price") is not None:
                 price = float(supply["unit_price"])
