@@ -172,3 +172,39 @@ def test_excel_physical_unit_rate_links_revenue_to_activity_without_double_count
     assert forecast["summary_reference_amount"] == 1000
     assert forecast["summary_reconciliation_difference"] == 750
     assert forecast["unallocated_amount"] == 0
+
+
+def test_material_inventory_is_carried_forward_instead_of_counted_again_each_month(tmp_path):
+    conn = connect(tmp_path / "carried-inventory.db")
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Test')")
+    activity_id = _activity(conn, quantity=200, daily_target=100)
+    material_id = conn.execute(
+        "INSERT INTO resource(project_id,category,title,available,unit,source) VALUES(1,'مصالح','بتن',150,'مترمکعب','MANUAL')"
+    ).lastrowid
+    conn.executemany(
+        """
+        INSERT INTO activity_daily_plan(activity_id,plan_date,quantity,source)
+        VALUES(?,?,?,'MANUAL')
+        """,
+        [(activity_id, "2026-10-01", 100), (activity_id, "2026-11-01", 100)],
+    )
+    conn.execute(
+        """
+        INSERT INTO activity_resource_requirement(
+            project_id,activity_id,resource_id,category,resource_title,unit,
+            quantity_per_activity_unit,source
+        ) VALUES(1,? ,?,'مصالح','بتن','مترمکعب',1,'MANUAL')
+        """,
+        (activity_id, material_id),
+    )
+
+    rows = sorted(activity_resource_forecast(conn, 1), key=lambda row: row["period"])
+    conn.close()
+
+    assert rows[0]["period"] == "آبان 1405"
+    assert rows[0]["required_qty"] == 100
+    assert rows[0]["available_qty"] == 50
+    assert rows[0]["shortage_qty"] == 50
+    assert rows[1]["period"] == "مهر 1405"
+    assert rows[1]["available_qty"] == 150
+    assert rows[1]["shortage_qty"] == 0
