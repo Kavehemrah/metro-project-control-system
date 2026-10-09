@@ -573,6 +573,8 @@ class ResourcePage(RecordPage):
 RISK_FIELDS = [
     ("category", "دسته", "text", {}),
     ("title", "شرح ریسک", "text", {}),
+    ("consequence", "پیامد", "text", {}),
+    ("existing_controls", "کنترل‌های موجود", "text", {}),
     ("probability", "احتمال (۱ تا ۵)", "integer", {"minimum": 1, "maximum": 5}),
     ("impact", "اثر (۱ تا ۵)", "integer", {"minimum": 1, "maximum": 5}),
     ("control", "ضریب کنترل (۱ تا ۵)", "integer", {"minimum": 1, "maximum": 5}),
@@ -588,6 +590,8 @@ class RiskPage(RecordPage):
             [
                 ("category", "دسته", None),
                 ("title", "شرح ریسک", None),
+                ("consequence", "پیامد", None),
+                ("existing_controls", "کنترل‌های موجود", None),
                 ("probability", "احتمال", None),
                 ("impact", "اثر", None),
                 ("control", "کنترل", None),
@@ -683,8 +687,8 @@ class ReportsPage(QWidget):
             (
                 "خروجی ریسک‌ها",
                 "risks.csv",
-                ["دسته", "شرح ریسک", "احتمال", "اثر", "کنترل", "امتیاز", "اقدام"],
-                "SELECT category,title,probability,impact,control,score,action FROM risk WHERE project_id=? ORDER BY score DESC",
+                ["دسته", "شرح ریسک", "پیامد", "کنترل‌های موجود", "احتمال", "اثر", "کنترل", "امتیاز", "اقدام"],
+                "SELECT category,title,consequence,existing_controls,probability,impact,control,score,action FROM risk WHERE project_id=? ORDER BY score DESC",
             ),
         ]:
             button = QPushButton(label)

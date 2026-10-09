@@ -69,6 +69,24 @@ def _normal_key(value: str) -> str:
     )
 
 
+def _summary_month_columns(sheet):
+    month_names = [
+        "فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
+        "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند",
+    ]
+    normalized_months = [_normal_key(month) for month in month_names]
+    for row_no in range(1, min(sheet.max_row, 12) + 1):
+        columns = []
+        for col_no in range(1, sheet.max_column + 1):
+            label = _normal_key(_clean_text(sheet.cell(row_no, col_no).value))
+            matching_months = [month for month in normalized_months if month in label]
+            if len(matching_months) == 1:
+                columns.append((col_no, _clean_text(sheet.cell(row_no, col_no).value)))
+        if columns:
+            return row_no, columns
+    return None, []
+
+
 def _parse_project_metadata(workbook):
     candidates = ["جلد"]
     sheet = next((workbook[name] for name in candidates if name in workbook.sheetnames), None)
@@ -89,63 +107,22 @@ def _parse_summary_metrics(workbook):
     summary = {
         "physical_progress": _clean_number(sheet["F5"].value),
         "revenue": _clean_number(sheet["F11"].value),
+        "contract_revenue": _clean_number(sheet["F7"].value),
+        "adjustment": _clean_number(sheet["F8"].value),
+        "adjustment_difference": _clean_number(sheet["F9"].value),
+        "other_income": _clean_number(sheet["F10"].value),
         "cost": _clean_number(sheet["F20"].value),
-        "adjustment": 0.0,
-        "other_income": 0.0,
+        "revenue_progress": _clean_number(sheet["F12"].value),
         "monthly_finance": [],
     }
 
-    for row in sheet.iter_rows(values_only=True):
-        text = _row_text(row)
-        if not text:
-            continue
-        numeric = [_clean_number(v) for v in row if isinstance(v, (int, float))]
-        if not numeric:
-            continue
-        value = numeric[-1]
-
-        if "درصد پیشرفت فیزیکی پروژه" in text:
-            summary["physical_progress"] = value
-        elif "تعدیل" in text:
-            summary["adjustment"] = value
-        elif "سایر" in text and "درآمد" in text:
-            summary["other_income"] = value
-
-    summary["total_revenue"] = (
-        summary["revenue"] + summary["adjustment"] + summary["other_income"]
-    )
-
-    header_row = None
-    for row_no in range(1, min(sheet.max_row, 12) + 1):
-        text = _row_text(
-            [sheet.cell(row_no, col).value for col in range(1, min(sheet.max_column, 10) + 1)]
-        )
-        if "مهر" in text or "آبان" in text:
-            header_row = row_no
-            break
-
-    if header_row:
-        month_columns = []
-        for col in range(1, sheet.max_column + 1):
-            label = _clean_text(sheet.cell(header_row, col).value)
-            if label and label not in {"مجموع", "جمع"}:
-                if any(month in label for month in ["مهر", "آبان", "شهریور", "آذر", "دی", "بهمن", "اسفند"]):
-                    month_columns.append((col, label))
-        for col, label in month_columns:
-            revenue = 0.0
-            cost = 0.0
-            for row_no in range(header_row + 1, sheet.max_row + 1):
-                label_text = _row_text(
-                    [sheet.cell(row_no, c).value for c in range(1, min(sheet.max_column, 6) + 1)]
-                )
-                value = _clean_number(sheet.cell(row_no, col).value)
-                if "هزینه" in label_text and ("جمع" in label_text or "کل" in label_text):
-                    cost = value
-                if "درآمد" in label_text and ("جمع" in label_text or "کل" in label_text):
-                    revenue = value
-            month_name = label
-            if revenue or cost:
-                summary["monthly_finance"].append((month_name, revenue, cost))
+    summary["total_revenue"] = summary["revenue"]
+    _header_row, month_columns = _summary_month_columns(sheet)
+    for col, label in month_columns:
+        revenue = _clean_number(sheet.cell(11, col).value)
+        cost = _clean_number(sheet.cell(20, col).value)
+        if revenue or cost:
+            summary["monthly_finance"].append((label, revenue, cost))
 
     if not summary["monthly_finance"]:
         summary["monthly_finance"] = [
@@ -223,6 +200,13 @@ def _parse_physical_progress(workbook):
             if value:
                 item["periods"].append((label, value))
 
+        if item["total"] <= 0:
+            item["total"] = (
+                item["opening"]
+                + item["remaining"]
+                + sum(value for _period, value in item["periods"])
+            )
+
         result[key] = item
 
     return result
@@ -262,6 +246,8 @@ def _parse_operational_plan(workbook):
 
     result = []
     fixed_cols = set(columns.values())
+    current_position = ""
+    current_zone = ""
 
     # Daily columns are only accepted when a nearby header cell contains a date.
     daily_columns = []
@@ -288,8 +274,16 @@ def _parse_operational_plan(workbook):
 
     for row_no in range(header_row + 1, sheet.max_row + 1):
         title = _clean_text(sheet.cell(row_no, columns.get("title", 0)).value) if columns.get("title") else ""
-        zone = _clean_text(sheet.cell(row_no, columns.get("zone", 0)).value) if columns.get("zone") else ""
-        position = _clean_text(sheet.cell(row_no, columns.get("position", 0)).value) if columns.get("position") else ""
+        raw_zone = _clean_text(sheet.cell(row_no, columns.get("zone", 0)).value) if columns.get("zone") else ""
+        raw_position = _clean_text(sheet.cell(row_no, columns.get("position", 0)).value) if columns.get("position") else ""
+        if raw_position:
+            if _normal_key(raw_position) != _normal_key(current_position):
+                current_zone = ""
+            current_position = raw_position
+        if raw_zone:
+            current_zone = raw_zone
+        zone = current_zone
+        position = current_position
         if not title:
             continue
 
@@ -321,22 +315,31 @@ def _parse_detail_cost(workbook):
     if sheet is None:
         return 0.0
 
-    candidates = []
-    fallback = []
-    for row in sheet.iter_rows(values_only=True):
-        text = _row_text(row)
-        if "جمع" not in text:
+    total_col = next(
+        (
+            col_no
+            for col_no in range(1, sheet.max_column + 1)
+            if _normal_key(_clean_text(sheet.cell(3, col_no).value)) in {"مجموع", "جمع"}
+        ),
+        None,
+    )
+    if total_col is None:
+        return 0.0
+
+    subtotals = []
+    for row_no in range(4, sheet.max_row + 1):
+        labels = _normal_key(
+            " ".join(
+                _clean_text(sheet.cell(row_no, col_no).value)
+                for col_no in (2, 3)
+            )
+        )
+        if "مجموع" not in labels and "جمع" not in labels:
             continue
-        numeric = [_clean_number(v) for v in row if isinstance(v, (int, float))]
-        if not numeric:
-            continue
-        value = max(numeric)
-        fallback.append(value)
-        if "هزینه" in text or "هزينه" in text:
-            candidates.append(value)
-    if candidates:
-        return max(candidates)
-    return max(fallback) if fallback else 0.0
+        value = _clean_number(sheet.cell(row_no, total_col).value)
+        if value:
+            subtotals.append(value)
+    return subtotals[-1] if subtotals else 0.0
 
 
 def _parse_financial_entries(workbook):
@@ -346,34 +349,36 @@ def _parse_financial_entries(workbook):
 
     revenue_entries = []
     cost_entries = []
+    _header_row, month_columns = _summary_month_columns(sheet)
+    section = None
 
-    for row_no in range(7, 12):
-        label = _clean_text(sheet.cell(row_no, 2).value)
-        if not label:
+    for row_no in range(4, sheet.max_row + 1):
+        group_label = _normal_key(_clean_text(sheet.cell(row_no, 2).value))
+        if "درآمد" in group_label:
+            section = "revenue"
+        elif "هزینه" in group_label or "هزينه" in group_label:
+            section = "cost"
+        elif "بالانس" in group_label or "پیشرفت" in group_label:
+            section = None
+
+        if section is None:
             continue
-        for col_no in range(3, 6):
-            period = _clean_text(sheet.cell(3, col_no).value)
+
+        category = _clean_text(sheet.cell(row_no, 3).value)
+        normalized_category = _normal_key(category)
+        if not category:
+            continue
+        if normalized_category in {"مجموع", "جمع", "تجمعی", "کل"}:
+            section = None
+            continue
+
+        entries = revenue_entries if section == "revenue" else cost_entries
+        for col_no, period in month_columns:
             amount = _clean_number(sheet.cell(row_no, col_no).value)
             if amount:
-                revenue_entries.append({
-                    "category": label,
-                    "period": period or "مجموع",
-                    "amount": amount,
-                })
-
-    for row_no in range(14, 35):
-        label = _clean_text(sheet.cell(row_no, 2).value)
-        if not label:
-            continue
-        for col_no in range(3, 6):
-            period = _clean_text(sheet.cell(3, col_no).value)
-            amount = _clean_number(sheet.cell(row_no, col_no).value)
-            if amount:
-                cost_entries.append({
-                    "category": label,
-                    "period": period or "مجموع",
-                    "amount": amount,
-                })
+                entries.append(
+                    {"category": category, "period": period, "amount": amount}
+                )
 
     return {"revenue": revenue_entries, "cost": cost_entries}
 
@@ -439,6 +444,67 @@ def _parse_resources(workbook):
             )
 
     return resources
+
+
+def _parse_risks(workbook):
+    score_header = _normal_key("Risk Score")
+    sheet = None
+    header_row = None
+    for candidate in workbook.worksheets:
+        for row_no in range(1, min(candidate.max_row, 20) + 1):
+            if any(
+                _normal_key(_clean_text(candidate.cell(row_no, col_no).value)) == score_header
+                for col_no in range(1, min(candidate.max_column, 30) + 1)
+            ):
+                sheet = candidate
+                header_row = row_no
+                break
+        if sheet is not None:
+            break
+    if sheet is None:
+        return []
+
+    columns = _find_columns(
+        sheet,
+        header_row,
+        {
+            "category": ["گروه ریسک", "دسته ریسک"],
+            "title": ["شرح فعالیت", "شرح ریسک"],
+            "consequence": ["پیامد ریسک", "پیامد"],
+            "existing_controls": ["اقدامات کنترلی موجود", "کنترل موجود"],
+            "probability": ["احتمال وقوع", "احتمال"],
+            "impact": ["شدت وقوع", "شدت اثر", "شدت"],
+            "control": ["کنترل ریسک", "ضریب کنترل"],
+            "score": ["Risk Score", "امتیاز ریسک"],
+            "action": ["اقدام اصلاحی پیشنهادی", "اقدام اصلاحی"],
+        },
+    )
+
+    risks = []
+    for row_no in range(header_row + 1, sheet.max_row + 1):
+        title = _clean_text(sheet.cell(row_no, columns.get("title", 0)).value) if columns.get("title") else ""
+        if not title:
+            continue
+
+        probability = int(_clean_number(sheet.cell(row_no, columns["probability"]).value)) if columns.get("probability") else 0
+        impact = int(_clean_number(sheet.cell(row_no, columns["impact"]).value)) if columns.get("impact") else 0
+        control = int(_clean_number(sheet.cell(row_no, columns["control"]).value)) if columns.get("control") else 0
+        score_value = _clean_number(sheet.cell(row_no, columns["score"]).value) if columns.get("score") else 0
+        risks.append(
+            {
+                "category": _clean_text(sheet.cell(row_no, columns["category"]).value) if columns.get("category") else "",
+                "title": title,
+                "consequence": _clean_text(sheet.cell(row_no, columns["consequence"]).value) if columns.get("consequence") else "",
+                "existing_controls": _clean_text(sheet.cell(row_no, columns["existing_controls"]).value) if columns.get("existing_controls") else "",
+                "probability": probability,
+                "impact": impact,
+                "control": control,
+                "score": int(score_value) if score_value else probability * impact * control,
+                "action": _clean_text(sheet.cell(row_no, columns["action"]).value) if columns.get("action") else "",
+            }
+        )
+
+    return risks
 
 
 def _upsert_activity(conn, item, physical, row_no):
@@ -563,8 +629,9 @@ def import_workbook(path):
     operational = _parse_operational_plan(workbook_values)
     detail_cost = _parse_detail_cost(workbook_values)
     resources = _parse_resources(workbook_values)
+    risks = _parse_risks(workbook_values)
     financial_entries = _parse_financial_entries(workbook_values)
-    formula_errors = scan_formula_errors(workbook_formulas)
+    formula_errors = scan_formula_errors(workbook_formulas, workbook_values)
 
     conn = connect()
     try:
@@ -593,7 +660,7 @@ def import_workbook(path):
                 metrics["total_revenue"],
                 metrics["cost"],
                 metrics["balance"],
-                0,
+                metrics["revenue_progress"],
             ),
         )
 
@@ -606,14 +673,31 @@ def import_workbook(path):
 
         conn.execute("DELETE FROM discrepancy WHERE project_id=1")
         conn.execute("DELETE FROM resource WHERE project_id=1")
+        conn.execute("DELETE FROM risk WHERE project_id=1")
         conn.execute("DELETE FROM revenue_entry WHERE project_id=1")
         conn.execute("DELETE FROM cost_entry WHERE project_id=1")
         conn.execute("DELETE FROM activity_dependency WHERE project_id=1")
+        conn.execute("DELETE FROM physical_progress_entry WHERE project_id=1")
 
         for item in resources:
             conn.execute(
                 "INSERT INTO resource(project_id, category, title, required, available, unit) VALUES(1,?,?,?,?,?)",
                 (item["category"], item["title"], item["required"], item["available"], item["unit"]),
+            )
+
+        for risk in risks:
+            conn.execute(
+                """
+                INSERT INTO risk(
+                    project_id, category, title, consequence, existing_controls,
+                    probability, impact, control, score, action
+                ) VALUES(1,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    risk["category"], risk["title"], risk["consequence"],
+                    risk["existing_controls"], risk["probability"], risk["impact"],
+                    risk["control"], risk["score"], risk["action"],
+                ),
             )
 
         for entry in financial_entries["revenue"]:
@@ -627,6 +711,22 @@ def import_workbook(path):
                 "INSERT INTO cost_entry(project_id, activity_id, period, category, amount, source) VALUES(1, NULL, ?, ?, ?, 'EXCEL')",
                 (entry["period"], entry["category"], entry["amount"]),
             )
+
+        for item in physical.values():
+            periods = item["periods"] or [("دوره گزارش", 0.0)]
+            for period, actual in periods:
+                conn.execute(
+                    """
+                    INSERT INTO physical_progress_entry(
+                        project_id, zone, work_package, unit, total_qty,
+                        opening_qty, actual_qty, remaining_qty, period, source
+                    ) VALUES(1,?,?,?,?,?,?,?,?,'EXCEL')
+                    """,
+                    (
+                        item["zone"], item["title"], item["unit"], item["total"],
+                        item["opening"], actual, item["remaining"], period,
+                    ),
+                )
 
         # Do not destroy the existing model when a workbook layout cannot be parsed.
         if operational:
@@ -642,6 +742,21 @@ def import_workbook(path):
                     "ورود برنامه عملیاتی انجام نشد",
                     "ساختار شیت «برنامه عملیاتی» شناسایی نشد؛ داده‌های فعالیت قبلی حفظ شدند.",
                     "HIGH",
+                ),
+            )
+
+        operational_keys = {
+            (_normal_key(item["zone"]), _normal_key(item["title"]))
+            for item in operational
+        }
+        unmatched_physical = len(set(physical) - operational_keys)
+        if unmatched_physical:
+            conn.execute(
+                "INSERT INTO discrepancy(project_id,title,detail,severity) VALUES(1,?,?,?)",
+                (
+                    "پیشرفت فیزیکی بدون تطبیق یک‌به‌یک",
+                    f"{unmatched_physical} بسته از شیت پیشرفت فیزیکی با عنوان فعالیت‌های برنامه عملیاتی تطبیق دقیق ندارند؛ داده خام جداگانه نگهداری شد و به فعالیتی نسبت داده نشد.",
+                    "MEDIUM",
                 ),
             )
 

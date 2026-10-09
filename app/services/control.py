@@ -77,20 +77,63 @@ def detect_finance_discrepancy(
     }
 
 
-def scan_formula_errors(workbook) -> list[dict]:
+def scan_formula_errors(workbook, cached_workbook=None) -> list[dict]:
+    error_tokens = (
+        "#REF!",
+        "#DIV/0!",
+        "#VALUE!",
+        "#NAME?",
+        "#N/A",
+        "#NUM!",
+        "#NULL!",
+        "#SPILL!",
+        "#CALC!",
+    )
     errors = []
     for sheet in workbook.worksheets:
         for row in sheet.iter_rows():
             for cell in row:
                 value = cell.value
-                if isinstance(value, str) and "#REF!" in value:
-                    errors.append(
-                        {
-                            "title": "خطای فرمول Excel",
-                            "detail": f"{sheet.title}!{cell.coordinate}: {value}",
-                            "severity": "HIGH",
-                        }
-                    )
+                if value is None:
+                    continue
+                formula_text = value.upper() if isinstance(value, str) else ""
+                candidate = cell.data_type in {"f", "e"} or any(
+                    token in formula_text for token in error_tokens
+                )
+                if not candidate:
+                    continue
+                cached_cell = (
+                    cached_workbook[sheet.title][cell.coordinate]
+                    if cached_workbook is not None
+                    else None
+                )
+                cached_value = cached_cell.value if cached_cell is not None else None
+                texts = [
+                    text.upper()
+                    for text in (value, cached_value)
+                    if isinstance(text, str)
+                ]
+                found_errors = sorted(
+                    {
+                        token
+                        for token in error_tokens
+                        if any(token in text for text in texts)
+                    }
+                )
+                is_error_cell = cell.data_type == "e" or (
+                    cached_cell is not None and cached_cell.data_type == "e"
+                )
+                if not found_errors and not is_error_cell:
+                    continue
+
+                error_label = ", ".join(found_errors) if found_errors else "Excel error cell"
+                errors.append(
+                    {
+                        "title": "خطای فرمول Excel",
+                        "detail": f"{sheet.title}!{cell.coordinate}: {value} ({error_label})",
+                        "severity": "HIGH",
+                    }
+                )
     return errors
 
 
@@ -190,6 +233,10 @@ def infer_activity_dependencies(conn: sqlite3.Connection, project_id: int = 1) -
     seen = set()
 
     for index, current in enumerate(rows):
+        current_position = (current["position"] or "").strip()
+        current_zone = (current["zone"] or "").strip()
+        if not current_position or not current_zone:
+            continue
         if not current["start_date"]:
             continue
         try:
@@ -197,7 +244,14 @@ def infer_activity_dependencies(conn: sqlite3.Connection, project_id: int = 1) -
         except ValueError:
             continue
 
+        latest_finish = None
+        predecessors = []
         for previous in rows[:index]:
+            if (
+                (previous["position"] or "").strip() != current_position
+                or (previous["zone"] or "").strip() != current_zone
+            ):
+                continue
             if not previous["finish_date"]:
                 continue
             try:
@@ -205,19 +259,21 @@ def infer_activity_dependencies(conn: sqlite3.Connection, project_id: int = 1) -
             except ValueError:
                 continue
 
-            same_group = (
-                (current["position"] or "") == (previous["position"] or "")
-                or (current["zone"] or "") == (previous["zone"] or "")
-            )
-            if not same_group:
-                continue
             if current_start < previous_finish:
                 continue
 
+            if latest_finish is None or previous_finish > latest_finish:
+                latest_finish = previous_finish
+                predecessors = [previous]
+            elif previous_finish == latest_finish:
+                predecessors.append(previous)
+
+        for previous in predecessors:
             key = (current["id"], previous["id"])
             if key in seen:
                 continue
             seen.add(key)
+            previous_finish = date.fromisoformat(str(previous["finish_date"])[:10])
             lag_days = (current_start - previous_finish).days
             conn.execute(
                 """

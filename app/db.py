@@ -94,6 +94,22 @@ CREATE TABLE IF NOT EXISTS activity_period (
     UNIQUE(activity_id, period)
 );
 
+CREATE TABLE IF NOT EXISTS physical_progress_entry (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL,
+    zone TEXT,
+    work_package TEXT NOT NULL,
+    unit TEXT,
+    total_qty REAL DEFAULT 0,
+    opening_qty REAL DEFAULT 0,
+    actual_qty REAL DEFAULT 0,
+    remaining_qty REAL DEFAULT 0,
+    period TEXT NOT NULL,
+    source TEXT DEFAULT 'EXCEL',
+    FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE,
+    UNIQUE(project_id, zone, work_package, period)
+);
+
 CREATE TABLE IF NOT EXISTS activity_dependency (
     id INTEGER PRIMARY KEY,
     project_id INTEGER NOT NULL,
@@ -148,6 +164,8 @@ CREATE TABLE IF NOT EXISTS risk (
     project_id INTEGER NOT NULL,
     category TEXT,
     title TEXT,
+    consequence TEXT,
+    existing_controls TEXT,
     probability INTEGER,
     impact INTEGER,
     control INTEGER,
@@ -187,6 +205,17 @@ def _add_missing_columns(conn):
     for name, definition in additions.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE activity ADD COLUMN {name} {definition}")
+
+    risk_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(risk)").fetchall()
+    }
+    for name, definition in {
+        "consequence": "TEXT",
+        "existing_controls": "TEXT",
+    }.items():
+        if name not in risk_columns:
+            conn.execute(f"ALTER TABLE risk ADD COLUMN {name} {definition}")
 
 
 def connect():
