@@ -101,11 +101,6 @@ def activity_control(conn: sqlite3.Connection, activity_id: int) -> dict:
 
 def update_activity_rollup(conn: sqlite3.Connection, activity_id: int) -> dict:
     control = activity_control(conn, activity_id)
-    activity = conn.execute(
-        "SELECT daily_target FROM activity WHERE id=?",
-        (activity_id,),
-    ).fetchone()
-
     actual_days = conn.execute(
         """
         SELECT actual_date, quantity
@@ -116,25 +111,23 @@ def update_activity_rollup(conn: sqlite3.Connection, activity_id: int) -> dict:
         (activity_id,),
     ).fetchall()
     forecast_date = None
-    if actual_days and control["remaining_qty"] > 0:
-        # Average production over days with recorded work; no undocumented
-        # assumption is made about weekends or non-working days.
-        quantities = [float(row["quantity"] or 0) for row in actual_days]
-        positive_days = [quantity for quantity in quantities if quantity > 0]
-        if positive_days:
-            actual_daily_rate = sum(positive_days) / len(positive_days)
-            try:
-                last_actual_date = date.fromisoformat(str(actual_days[-1]["actual_date"])[:10])
-            except ValueError:
-                last_actual_date = None
-            if last_actual_date is not None:
-                forecast_date = forecast_finish(
-                    last_actual_date + timedelta(days=1),
-                    control["remaining_qty"],
-                    actual_daily_rate,
-                )
-    elif control["remaining_qty"] <= 0:
-        forecast_date = date.today()
+    if actual_days:
+        try:
+            last_actual_date = date.fromisoformat(str(actual_days[-1]["actual_date"])[:10])
+        except ValueError:
+            last_actual_date = None
+        if last_actual_date is not None and control["remaining_qty"] <= 0:
+            forecast_date = last_actual_date
+        elif last_actual_date is not None and control["remaining_qty"] > 0:
+            # Average production over days with recorded work; this forecast
+            # uses calendar days because no working-day calendar is configured.
+            quantities = [float(row["quantity"] or 0) for row in actual_days]
+            actual_daily_rate = sum(quantities) / len(quantities)
+            forecast_date = forecast_finish(
+                last_actual_date + timedelta(days=1),
+                control["remaining_qty"],
+                actual_daily_rate,
+            )
 
     conn.execute(
         """
