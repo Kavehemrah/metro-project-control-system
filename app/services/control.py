@@ -123,11 +123,12 @@ def update_activity_rollup(conn: sqlite3.Connection, activity_id: int) -> dict:
             # uses calendar days because no working-day calendar is configured.
             quantities = [float(row["quantity"] or 0) for row in actual_days]
             actual_daily_rate = sum(quantities) / len(quantities)
-            forecast_date = forecast_finish(
-                last_actual_date + timedelta(days=1),
-                control["remaining_qty"],
-                actual_daily_rate,
-            )
+            if actual_daily_rate > 0:
+                forecast_date = forecast_finish(
+                    last_actual_date + timedelta(days=1),
+                    control["remaining_qty"],
+                    actual_daily_rate,
+                )
 
     conn.execute(
         """
