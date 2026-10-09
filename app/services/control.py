@@ -6,20 +6,81 @@ from datetime import date, timedelta
 from typing import Iterable
 
 
-def planned_actual_totals(conn: sqlite3.Connection, activity_id: int) -> tuple[float, float]:
+def planned_actual_totals(
+    conn: sqlite3.Connection, activity_id: int
+) -> tuple[float, float, float]:
+    """Return period plan, period actual, and cumulative actual quantities.
+
+    Excel period actuals exclude opening quantities. Manual actuals only count
+    toward period achievement when their dates fall inside the available plan
+    window; all manual actuals still contribute to cumulative progress.
+    """
     planned = conn.execute(
         "SELECT COALESCE(SUM(quantity), 0) FROM activity_daily_plan WHERE activity_id=?",
         (activity_id,),
     ).fetchone()[0]
-    manual_actual = conn.execute(
-        "SELECT COALESCE(SUM(quantity), 0) FROM activity_daily_actual WHERE activity_id=?",
+
+    manual_actual_total = conn.execute(
+        """
+        SELECT COALESCE(SUM(quantity), 0)
+        FROM activity_daily_actual
+        WHERE activity_id=? AND source='MANUAL'
+        """,
         (activity_id,),
     ).fetchone()[0]
-    baseline = conn.execute(
-        "SELECT COALESCE(baseline_actual_qty, actual_qty, 0) FROM activity WHERE id=?",
+    manual_actual_total = float(manual_actual_total or 0)
+
+    plan_window = conn.execute(
+        """
+        SELECT MIN(plan_date) AS first_date, MAX(plan_date) AS last_date
+        FROM activity_daily_plan
+        WHERE activity_id=?
+        """,
+        (activity_id,),
+    ).fetchone()
+    if plan_window["first_date"] and plan_window["last_date"]:
+        manual_period_actual = conn.execute(
+            """
+            SELECT COALESCE(SUM(quantity), 0)
+            FROM activity_daily_actual
+            WHERE activity_id=? AND source='MANUAL'
+              AND actual_date BETWEEN ? AND ?
+            """,
+            (activity_id, plan_window["first_date"], plan_window["last_date"]),
+        ).fetchone()[0]
+    else:
+        manual_period_actual = manual_actual_total
+
+    excel_period_actual = conn.execute(
+        """
+        SELECT COALESCE(SUM(actual_qty), 0)
+        FROM activity_period
+        WHERE activity_id=? AND source='EXCEL' AND COALESCE(planned_qty, 0)>0
+        """,
         (activity_id,),
     ).fetchone()[0]
-    return float(planned or 0), float(baseline or 0) + float(manual_actual or 0)
+
+    activity = conn.execute(
+        "SELECT source, baseline_actual_qty, actual_qty FROM activity WHERE id=?",
+        (activity_id,),
+    ).fetchone()
+    if activity is None:
+        baseline_actual = 0.0
+    elif activity["source"] == "EXCEL":
+        baseline_value = activity["baseline_actual_qty"]
+        if baseline_value is None:
+            baseline_value = activity["actual_qty"]
+        baseline_actual = float(baseline_value or 0)
+    else:
+        # Manual activities may have a directly entered actual quantity or a
+        # rollup previously updated from daily actual entries.
+        baseline_actual = max(
+            0.0, float(activity["actual_qty"] or 0) - manual_actual_total
+        )
+
+    cumulative_actual = baseline_actual + manual_actual_total
+    period_actual = float(excel_period_actual or 0) + float(manual_period_actual or 0)
+    return float(planned or 0), period_actual, cumulative_actual
 
 
 def activity_control(conn: sqlite3.Connection, activity_id: int) -> dict:
@@ -30,21 +91,24 @@ def activity_control(conn: sqlite3.Connection, activity_id: int) -> dict:
     if row is None:
         raise ValueError("Activity not found.")
 
-    planned, actual = planned_actual_totals(conn, activity_id)
+    planned, period_actual, cumulative_actual = planned_actual_totals(conn, activity_id)
     total = float(row["quantity"] or 0)
     baseline_qty = planned if planned > 0 else max(0.0, total - float(row["remaining_qty"] or 0))
-    variance = actual - planned
-    achievement = (actual / planned * 100.0) if planned else 0.0
-    physical = (actual / total * 100.0) if total else 0.0
+    variance = period_actual - planned
+    achievement = (period_actual / planned * 100.0) if planned else 0.0
+    physical = (cumulative_actual / total * 100.0) if total else 0.0
 
     return {
         "planned_qty": planned,
-        "actual_qty": actual,
+        # Keep actual_qty as a compatibility alias for cumulative actuals.
+        "actual_qty": cumulative_actual,
+        "period_actual_qty": period_actual,
+        "cumulative_actual_qty": cumulative_actual,
         "variance_qty": variance,
         "achievement_pct": achievement,
         "physical_progress_pct": physical,
         "baseline_qty": baseline_qty,
-        "remaining_qty": max(0.0, total - actual),
+        "remaining_qty": max(0.0, total - cumulative_actual),
     }
 
 

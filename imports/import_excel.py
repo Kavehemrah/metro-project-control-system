@@ -1060,7 +1060,12 @@ def import_workbook(path, db_path: str | Path | None = None):
 
         for error in formula_errors:
             conn.execute(
-                "INSERT INTO discrepancy(project_id,title,detail,severity) VALUES(1,?,?,?)",
+                """
+                INSERT INTO discrepancy(
+                    project_id, title, detail, severity, source
+                )
+                VALUES(1, ?, ?, ?, 'EXCEL')
+                """,
                 (error["title"], error["detail"], error["severity"]),
             )
 

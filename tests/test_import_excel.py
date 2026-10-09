@@ -5,7 +5,7 @@ import sqlite3
 from openpyxl import load_workbook
 
 from app.db import connect
-from app.services.control import update_activity_rollup
+from app.services.control import activity_control, update_activity_rollup
 from imports.import_excel import (
     _parse_detail_cost,
     _parse_physical_progress,
@@ -312,6 +312,15 @@ def test_workbook_import_includes_resource_sheets(tmp_path):
         "stale_activity": conn.execute("SELECT COUNT(*) FROM activity WHERE source='EXCEL' AND row_no=999").fetchone()[0],
         "stale_warning": conn.execute("SELECT COUNT(*) FROM discrepancy WHERE source='EXCEL' AND title='فعالیت‌های فایل قبلی حفظ شدند'").fetchone()[0],
     }
+    formula_warning_count = conn.execute(
+        "SELECT COUNT(*) FROM discrepancy WHERE project_id=1 AND title='خطای فرمول Excel'"
+    ).fetchone()[0]
+    formula_warning_sources = [
+        row[0]
+        for row in conn.execute(
+            "SELECT DISTINCT source FROM discrepancy WHERE project_id=1 AND title='خطای فرمول Excel'"
+        )
+    ]
     conn.close()
 
     assert tuple(manual_actual) == (1, 5)
@@ -322,9 +331,74 @@ def test_workbook_import_includes_resource_sheets(tmp_path):
     assert manual_activity["remaining_qty"] == 1361
     assert workbook_row_count == 1
     assert all(count == 1 for count in preserved_manual_rows.values())
+    assert formula_warning_count == 1, "Formula warnings must not duplicate on re-import"
+    assert formula_warning_sources == ["EXCEL"], "Workbook formula warnings must be tagged as Excel data"
+
+
+def test_activity_control_separates_period_and_cumulative_actuals(tmp_path):
+    conn = connect(tmp_path / "period-control.db")
+    conn.execute(
+        "INSERT INTO project(id,name) VALUES(1,'Control test')"
+    )
+    conn.execute(
+        """
+        INSERT INTO activity(
+            project_id,title,quantity,remaining_qty,actual_qty,
+            baseline_actual_qty,source
+        ) VALUES(1,'Test activity',100,50,50,50,'EXCEL')
+        """
+    )
+    activity_id = conn.execute(
+        "SELECT id FROM activity WHERE title='Test activity'"
+    ).fetchone()[0]
+    conn.executemany(
+        """
+        INSERT INTO activity_daily_plan(activity_id,plan_date,quantity,source)
+        VALUES(?,?,?,'EXCEL')
+        """,
+        [
+            (activity_id, "2026-09-25", 10),
+            (activity_id, "2026-11-12", 10),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO activity_period(
+            activity_id,period,planned_qty,actual_qty,source
+        ) VALUES(?,?,?,?, 'EXCEL')
+        """,
+        [
+            (activity_id, "مهر 1405", 10, 8),
+            (activity_id, "آبان 1405", 10, 7),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO activity_daily_actual(activity_id,actual_date,quantity,source)
+        VALUES(?,?,?,'MANUAL')
+        """,
+        [
+            (activity_id, "2026-10-01", 2),
+            (activity_id, "2026-12-01", 3),
+        ],
+    )
+    conn.commit()
+
+    control = activity_control(conn, activity_id)
+    conn.close()
+
+    assert control["planned_qty"] == 20
+    assert control["period_actual_qty"] == 17
+    assert control["cumulative_actual_qty"] == 55
+    assert control["actual_qty"] == 55
+    assert control["variance_qty"] == -3
+    assert control["achievement_pct"] == 85
+    assert control["physical_progress_pct"] == 55
+    assert control["remaining_qty"] == 45
 
 
 def test_physical_progress_migration_allows_duplicate_descriptions_by_position(tmp_path):
+
     db_path = tmp_path / "legacy.db"
     legacy = sqlite3.connect(db_path)
     legacy.executescript(
