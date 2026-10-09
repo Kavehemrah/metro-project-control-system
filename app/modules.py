@@ -28,9 +28,13 @@ from PySide6.QtWidgets import (
 
 from .db import connect
 from .services.control import activity_control, update_activity_rollup
-from .services.dates import normalize_date
+from .services.dates import format_date, normalize_date
 from .services.forecast import calculate_schedule, forecast_finance
 from .services.actual_finance import finance_performance, record_actual
+from .services.activity_costs import (
+    activity_cost_items,
+    activity_resource_forecast,
+)
 from .ui import BLUE, MUTED, TEXT
 
 
@@ -64,6 +68,9 @@ class RecordDialog(QDialog):
             value = initial.get(key, options.get("default"))
             if kind == "text":
                 widget = QLineEdit("" if value is None else str(value))
+            elif kind == "date":
+                widget = QLineEdit(format_date(value) if value else "")
+                widget.setPlaceholderText("مثلاً 1405/07/17")
             elif kind in ("number", "percent"):
                 widget = QDoubleSpinBox()
                 widget.setRange(options.get("minimum", 0), options.get("maximum", 1_000_000_000))
@@ -87,6 +94,13 @@ class RecordDialog(QDialog):
                     widget.addItem(activity_label, activity_id)
                 index = widget.findData(value)
                 widget.setCurrentIndex(index if index >= 0 else 0)
+            elif kind == "resource":
+                widget = QComboBox()
+                widget.addItem("انتخاب منبع", None)
+                for resource_id, resource_label in options["choices"]:
+                    widget.addItem(resource_label, resource_id)
+                index = widget.findData(value)
+                widget.setCurrentIndex(index if index >= 0 else 0)
             else:
                 raise ValueError(f"Unsupported field type: {kind}")
             self.inputs[key] = (widget, kind, options)
@@ -105,9 +119,12 @@ class RecordDialog(QDialog):
         for key, (widget, kind, _) in self.inputs.items():
             if kind == "text":
                 result[key] = widget.text().strip()
+            elif kind == "date":
+                raw_date = widget.text().strip()
+                result[key] = normalize_date(raw_date) if raw_date else None
             elif kind == "choice":
                 result[key] = widget.currentText()
-            elif kind == "activity":
+            elif kind in ("activity", "resource"):
                 result[key] = widget.currentData()
             else:
                 value = widget.value()
