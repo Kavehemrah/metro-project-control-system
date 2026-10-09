@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from .db import connect
 from .services.control import activity_control, update_activity_rollup
 from .services.dates import normalize_date
+from .services.forecast import calculate_schedule, forecast_finance
 from .ui import BLUE, MUTED, TEXT
 
 
@@ -299,7 +300,8 @@ class ActivityPage(RecordPage):
             ("remaining_qty", "باقی‌مانده", lambda v, _r: f"{v or 0:,.2f}"),
             ("unit", "واحد", None),
             ("start_date", "شروع", None),
-            ("finish_date", "پایان", None),
+            ("finish_date", "پایان برنامه", None),
+            ("forecast_finish", "پایان پیش‌بینی", None),
             ("daily_target", "برنامه روزانه", lambda v, _r: f"{v or 0:,.2f}"),
             ("planned_qty", "برنامه دوره", lambda v, _r: f"{v or 0:,.2f}"),
             ("actual_qty", "عملکرد دوره", lambda v, _r: f"{v or 0:,.2f}"),
@@ -317,6 +319,10 @@ class ActivityPage(RecordPage):
             ACTIVITY_FIELDS,
             "activity",
         )
+        self.schedule_notice = QLabel()
+        self.schedule_notice.setWordWrap(True)
+        self.schedule_notice.setStyleSheet(f"color:{MUTED};")
+        self.layout().insertWidget(1, self.schedule_notice)
         if progress_only:
             self.add_button.setText("ثبت عملکرد روزانه")
             self.edit_button.setText("ثبت عملکرد")
@@ -332,10 +338,17 @@ class ActivityPage(RecordPage):
     def refresh(self):
         conn = connect()
         try:
+            schedule = calculate_schedule(conn, self.project_id, persist=True)
             self.records = conn.execute(
                 self.query,
                 (self.project_id, *self.query_params),
             ).fetchall()
+            if hasattr(self, "schedule_notice"):
+                if schedule["cycle"]:
+                    self.schedule_notice.setText("خطا: وابستگی فعالیت‌ها چرخه دارد؛ تاریخ‌های پیش‌بینی به‌روزرسانی نشدند. فعالیت‌ها: " + "، ".join(schedule.get("cycle_titles", [])))
+                else:
+                    delayed = sum(1 for item in schedule["activities"] if item["delay_days"] > 0)
+                    self.schedule_notice.setText(f"موتور زمان‌بندی: {schedule['updated']} فعالیت بررسی شد؛ {delayed} فعالیت دارای تأخیر پیش‌بینی‌شده است. محاسبات بر مبنای روز تقویمی هستند.")
 
             self.table.setRowCount(len(self.records))
             for row_index, record in enumerate(self.records):
@@ -351,6 +364,7 @@ class ActivityPage(RecordPage):
                     record["unit"],
                     record["start_date"],
                     record["finish_date"],
+                    record["forecast_finish"],
                     f"{record['daily_target'] or 0:,.2f}",
                     f"{control['planned_qty']:,.2f}",
                     f"{control['period_actual_qty']:,.2f}",
@@ -571,7 +585,26 @@ class ResourcePage(RecordPage):
                        FROM resource_period
                        WHERE resource_period.resource_id=resource.id
                          AND resource_period.source='EXCEL'
-                   ), '') AS period_summary
+                   ), '') AS period_summary,
+                    COALESCE((
+                        SELECT GROUP_CONCAT(
+                            resource_period.period || ': کمبود ' ||
+                            CASE
+                                WHEN resource_period.available_qty IS NOT NULL THEN
+                                    printf('%.2f', MAX(0, resource_period.required_qty - resource_period.available_qty))
+                                WHEN resource_period.opening_stock IS NOT NULL
+                                     AND resource_period.purchase_qty IS NOT NULL THEN
+                                    printf('%.2f', MAX(0, resource_period.required_qty - resource_period.opening_stock - resource_period.purchase_qty))
+                                WHEN resource.available IS NOT NULL THEN
+                                    printf('%.2f', MAX(0, resource_period.required_qty - resource.available))
+                                ELSE 'نامشخص'
+                            END,
+                            ' || '
+                        )
+                        FROM resource_period
+                        WHERE resource_period.resource_id=resource.id
+                          AND resource_period.source IN ('EXCEL','MANUAL')
+                    ), '') AS shortage_summary
             FROM resource WHERE resource.project_id=?
         """
         if category:
@@ -589,6 +622,7 @@ class ResourcePage(RecordPage):
                 ("supply_type", "نوع تأمین", None),
                 ("unit_price", "بهای واحد (ریال)", lambda value, _record: f"{value:,.0f}" if value is not None else "نامشخص"),
                 ("period_summary", "نیاز دوره‌ای", None),
+                ("shortage_summary", "کمبود دوره‌ای", None),
             ],
             RESOURCE_FIELDS,
             "resource",
@@ -654,8 +688,13 @@ class FinancePage(QWidget):
         layout.addWidget(title)
 
         self.summary = QLabel()
+        self.summary.setWordWrap(True)
         self.summary.setStyleSheet(f"font-size:15px;color:{BLUE};font-weight:600;")
         layout.addWidget(self.summary)
+        self.forecast_summary = QLabel()
+        self.forecast_summary.setWordWrap(True)
+        self.forecast_summary.setStyleSheet(f"color:{MUTED};")
+        layout.addWidget(self.forecast_summary)
         self.table = QTableWidget()
         _configure_table(self.table, ["دوره", "درآمد (ریال)", "هزینه (ریال)", "بالانس (ریال)"])
         layout.addWidget(self.table)
@@ -673,6 +712,7 @@ class FinancePage(QWidget):
             totals = conn.execute(
                 "SELECT revenue, cost, balance FROM kpi WHERE project_id=1 ORDER BY id DESC LIMIT 1"
             ).fetchone()
+            forecast = forecast_finance(conn, 1)
         finally:
             conn.close()
 
@@ -695,6 +735,15 @@ class FinancePage(QWidget):
             )
         else:
             self.summary.setText("اطلاعات مالی ثبت نشده است.")
+        revenue = forecast["revenue"]
+        cost = forecast["cost"]
+        self.forecast_summary.setText(
+            "پیش‌بینی مبتنی بر پیشرفت (فقط ردیف‌های تخصیص‌یافته به فعالیت): "
+            f"درآمد تحقق‌یافته وزنی {revenue['earned_to_date']:,.0f} از بودجه تخصیص‌یافته {revenue['linked_budget']:,.0f} ریال؛ "
+            f"هزینه متناظر {cost['earned_to_date']:,.0f} از {cost['linked_budget']:,.0f} ریال. "
+            f"بدون تخصیص به فعالیت: درآمد {revenue['unallocated_amount']:,.0f} و هزینه {cost['unallocated_amount']:,.0f} ریال. "
+            "این ارقام عملکرد واقعی پرداخت/هزینه نیستند؛ برای پیش‌بینی کل پروژه باید ردیف‌های مالی به فعالیت‌ها تخصیص داده شوند."
+        )
 
 
 class ReportsPage(QWidget):
