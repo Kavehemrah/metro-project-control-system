@@ -703,6 +703,25 @@ class FinancePage(QWidget):
         refresh = QPushButton("بروزرسانی")
         refresh.clicked.connect(self.refresh)
         layout.addWidget(refresh)
+
+        allocation_title = QLabel("تخصیص مبالغ مالی به فعالیت‌ها")
+        allocation_title.setStyleSheet(f"font-size:17px;font-weight:600;color:{TEXT};")
+        layout.addWidget(allocation_title)
+        allocation_note = QLabel(
+            "ردیف‌های Excel به‌صورت خودکار به فعالیت‌ها متصل نمی‌شوند؛ فقط در صورت انتخاب دستی محاسبه پیشرفت‌محور انجام می‌شود."
+        )
+        allocation_note.setWordWrap(True)
+        allocation_note.setStyleSheet(f"color:{MUTED};")
+        layout.addWidget(allocation_note)
+        self.allocations_table = QTableWidget()
+        _configure_table(
+            self.allocations_table,
+            ["نوع", "دوره", "شرح", "مبلغ (ریال)", "فعالیت مرتبط"],
+        )
+        layout.addWidget(self.allocations_table)
+        save_allocations = QPushButton("ذخیره تخصیص‌های مالی")
+        save_allocations.clicked.connect(self.save_allocations)
+        layout.addWidget(save_allocations)
         self.refresh()
 
     def refresh(self):
@@ -715,8 +734,36 @@ class FinancePage(QWidget):
                 "SELECT revenue, cost, balance FROM kpi WHERE project_id=1 ORDER BY id DESC LIMIT 1"
             ).fetchone()
             forecast = forecast_finance(conn, 1)
+            activities = conn.execute(
+                "SELECT id,row_no,title,zone FROM activity WHERE project_id=1 ORDER BY row_no,id"
+            ).fetchall()
+            allocation_rows = []
+            for table_name, label in (("revenue_entry", "درآمد"), ("cost_entry", "هزینه")):
+                for entry in conn.execute(
+                    f"SELECT id,activity_id,period,category,amount FROM {table_name} WHERE project_id=1 ORDER BY period,id"
+                ).fetchall():
+                    allocation_rows.append((table_name, label, entry))
         finally:
             conn.close()
+
+        self.allocations_table.setRowCount(len(allocation_rows))
+        for row_index, (table_name, label, entry) in enumerate(allocation_rows):
+            kind_item = QTableWidgetItem(label)
+            kind_item.setData(Qt.UserRole, (table_name, entry["id"]))
+            self.allocations_table.setItem(row_index, 0, kind_item)
+            self.allocations_table.setItem(row_index, 1, QTableWidgetItem(str(entry["period"] or "")))
+            self.allocations_table.setItem(row_index, 2, QTableWidgetItem(str(entry["category"] or "")))
+            self.allocations_table.setItem(row_index, 3, QTableWidgetItem(f"{float(entry['amount'] or 0):,.0f}"))
+            selector = QComboBox()
+            selector.addItem("بدون تخصیص", None)
+            for activity in activities:
+                prefix = f"{activity['row_no']} - " if activity["row_no"] is not None else ""
+                suffix = f" ({activity['zone']})" if activity["zone"] else ""
+                selector.addItem(f"{prefix}{activity['title'] or 'فعالیت'}{suffix}", activity["id"])
+            index = selector.findData(entry["activity_id"])
+            selector.setCurrentIndex(index if index >= 0 else 0)
+            self.allocations_table.setCellWidget(row_index, 4, selector)
+        self.allocations_table.resizeColumnsToContents()
 
         self.table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
@@ -740,12 +787,40 @@ class FinancePage(QWidget):
         revenue = forecast["revenue"]
         cost = forecast["cost"]
         self.forecast_summary.setText(
-            "پیش‌بینی مبتنی بر پیشرفت (فقط ردیف‌های تخصیص‌یافته به فعالیت): "
-            f"درآمد تحقق‌یافته وزنی {revenue['earned_to_date']:,.0f} از بودجه تخصیص‌یافته {revenue['linked_budget']:,.0f} ریال؛ "
-            f"هزینه متناظر {cost['earned_to_date']:,.0f} از {cost['linked_budget']:,.0f} ریال. "
-            f"بدون تخصیص به فعالیت: درآمد {revenue['unallocated_amount']:,.0f} و هزینه {cost['unallocated_amount']:,.0f} ریال. "
-            "این ارقام عملکرد واقعی پرداخت/هزینه نیستند؛ برای پیش‌بینی کل پروژه باید ردیف‌های مالی به فعالیت‌ها تخصیص داده شوند."
+            "ارزش پیشرفت وزنی از مبالغ تخصیص‌یافته: "
+            f"درآمد {revenue['earned_to_date']:,.0f} از مبلغ تخصیص‌یافته {revenue['linked_budget']:,.0f} ریال؛ "
+            f"هزینه {cost['earned_to_date']:,.0f} از {cost['linked_budget']:,.0f} ریال. "
+            f"مبالغ بدون تخصیص: درآمد {revenue['unallocated_amount']:,.0f} و هزینه {cost['unallocated_amount']:,.0f} ریال. "
+            "این محاسبه بودجه/مبلغ برنامه‌ای را بر اساس درصد پیشرفت وزن می‌دهد و جایگزین ثبت هزینه و درآمد واقعی نیست."
         )
+
+    def save_allocations(self):
+        conn = connect()
+        try:
+            for row_index in range(self.allocations_table.rowCount()):
+                kind_item = self.allocations_table.item(row_index, 0)
+                if kind_item is None:
+                    continue
+                target = kind_item.data(Qt.UserRole)
+                if not target:
+                    continue
+                table_name, entry_id = target
+                if table_name not in ("revenue_entry", "cost_entry"):
+                    continue
+                selector = self.allocations_table.cellWidget(row_index, 4)
+                activity_id = selector.currentData() if selector is not None else None
+                conn.execute(
+                    f"UPDATE {table_name} SET activity_id=? WHERE id=? AND project_id=1",
+                    (activity_id, entry_id),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        QMessageBox.information(self, "تخصیص مالی", "تخصیص‌های مالی ذخیره شد.")
+        self.refresh()
 
 
 class ReportsPage(QWidget):
