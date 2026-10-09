@@ -145,7 +145,7 @@ def activity_resource_forecast(conn: sqlite3.Connection, project_id: int = 1) ->
         if item["resource_id"] is not None:
             for supply in conn.execute(
                 """
-                SELECT period, available_qty, opening_stock, purchase_qty
+                SELECT period, available_qty, opening_stock, purchase_qty, unit_price
                 FROM resource_period
                 WHERE resource_id=? AND source IN ('EXCEL','MANUAL')
                 """,
