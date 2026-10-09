@@ -233,20 +233,28 @@ def forecast_finance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
     for table, name in (("revenue_entry", "revenue"), ("cost_entry", "cost")):
         rows = conn.execute(
             f"""
-            SELECT id, activity_id, amount FROM {table}
+            SELECT id, activity_id, amount, source FROM {table}
             WHERE project_id=? AND source IN ('EXCEL','MANUAL','EXCEL_ACTIVITY')
             """,
             (project_id,),
         ).fetchall()
+        has_activity_revenue = name == "revenue" and any(
+            row["source"] == "EXCEL_ACTIVITY" and row["activity_id"] is not None
+            for row in rows
+        )
         linked_budget = 0.0
         earned_to_date = 0.0
         unallocated = 0.0
+        summary_reference = 0.0
         linked_count = 0
         for entry in rows:
             amount = float(entry["amount"] or 0)
             activity_id = entry["activity_id"]
             if activity_id is None:
-                unallocated += amount
+                if has_activity_revenue and entry["source"] == "EXCEL":
+                    summary_reference += amount
+                else:
+                    unallocated += amount
                 continue
             activity = conn.execute(
                 "SELECT quantity FROM activity WHERE id=? AND project_id=?",
@@ -266,6 +274,8 @@ def forecast_finance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
             "earned_to_date": earned_to_date,
             "forecast_at_completion": linked_budget,
             "unallocated_amount": unallocated,
+            "summary_reference_amount": summary_reference,
+            "summary_reconciliation_difference": summary_reference - linked_budget if summary_reference else None,
             "linked_entries": linked_count,
             "coverage_pct": (
                 linked_budget / (linked_budget + unallocated) * 100.0
