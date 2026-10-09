@@ -1518,6 +1518,8 @@ class FinancePage(QWidget):
             f"هزینه‌های ثبت‌شده {performance['actual_cost']:,.0f} ریال | "
             f"خالص {performance['actual_net']:,.0f} ریال. "
             f"از هزینه‌های ثبت‌شده، {performance['unplanned_actual_cost']:,.0f} ریال پیش‌بینی‌نشده است. "
+            f"هزینه پیش‌بینی‌نشده مرتبط با فعالیت فاقد بودجه پایه که در برآورد فعالیتی نیامده: "
+            f"{performance['unplanned_cost_on_unbudgeted_activities']:,.0f} ریال. "
             f"ارزش کسب‌شده بر مبنای بودجه هزینه (EV): {performance['earned_value_cost']:,.0f} ریال. "
             f"پوشش فعالیت‌ها با ریز هزینه پایه: {performance['cost_model_coverage_pct']:.1f}٪؛ "
             f"فعالیت فاقد بودجه واحدمحور: {performance['unbudgeted_activity_count']}. "
