@@ -445,7 +445,7 @@ class ActivityPage(RecordPage):
                     ),
                 )
             else:
-                conn.execute(
+                cursor = conn.execute(
                     """
                     INSERT INTO activity_daily_actual(activity_id, actual_date, quantity, source, notes)
                     VALUES(?, ?, ?, 'MANUAL', ?)
@@ -456,6 +456,14 @@ class ActivityPage(RecordPage):
                     """,
                     (record["id"], actual_date, values["quantity"], values["notes"]),
                 )
+                if cursor.rowcount == 0:
+                    conn.rollback()
+                    QMessageBox.warning(
+                        self,
+                        "تاریخ متعلق به Excel",
+                        "برای این تاریخ رکورد واردشده از Excel وجود دارد؛ برای جلوگیری از بازنویسی داده منبع، عملکرد دستی ثبت نشد.",
+                    )
+                    return
             update_activity_rollup(conn, record["id"])
             conn.commit()
         except sqlite3.IntegrityError:
