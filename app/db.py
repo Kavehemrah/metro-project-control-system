@@ -319,10 +319,12 @@ def _migrate_physical_progress_identity(conn):
         if columns != ("project_id", "zone", "work_package", "period"):
             continue
 
-        conn.execute("BEGIN")
-        conn.execute(
-            """
-            CREATE TABLE physical_progress_entry_new (
+        savepoint = "migrate_physical_progress_identity"
+        conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            conn.execute(
+                """
+                CREATE TABLE physical_progress_entry_new (
                 id INTEGER PRIMARY KEY,
                 project_id INTEGER NOT NULL,
                 source_row_no INTEGER,
@@ -339,25 +341,30 @@ def _migrate_physical_progress_identity(conn):
                 source TEXT DEFAULT 'EXCEL',
                 FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE,
                 UNIQUE(project_id, source_row_no, period)
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO physical_progress_entry_new(
+            conn.execute(
+                """
+                INSERT INTO physical_progress_entry_new(
                 id,project_id,source_row_no,position,zone,work_package,unit,unit_rate,
                 total_qty,opening_qty,actual_qty,remaining_qty,period,source
             )
             SELECT id,project_id,source_row_no,position,zone,work_package,unit,unit_rate,
                    total_qty,opening_qty,actual_qty,remaining_qty,period,source
-            FROM physical_progress_entry
-            """
-        )
-        conn.execute("DROP TABLE physical_progress_entry")
-        conn.execute(
-            "ALTER TABLE physical_progress_entry_new RENAME TO physical_progress_entry"
-        )
-        conn.commit()
+                FROM physical_progress_entry
+                """
+            )
+            conn.execute("DROP TABLE physical_progress_entry")
+            conn.execute(
+                "ALTER TABLE physical_progress_entry_new RENAME TO physical_progress_entry"
+            )
+        except Exception:
+            conn.execute(f"ROLLBACK TO {savepoint}")
+            conn.execute(f"RELEASE {savepoint}")
+            raise
+        else:
+            conn.execute(f"RELEASE {savepoint}")
         break
 
 

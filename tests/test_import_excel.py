@@ -331,6 +331,28 @@ def test_physical_progress_migration_allows_duplicate_descriptions_by_position(t
         """
         CREATE TABLE project (id INTEGER PRIMARY KEY);
         INSERT INTO project(id) VALUES(1);
+        CREATE TABLE activity (
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER,
+            row_no INTEGER,
+            title TEXT,
+            quantity REAL,
+            remaining_qty REAL,
+            actual_qty REAL,
+            progress REAL,
+            status TEXT
+        );
+        INSERT INTO activity VALUES(1,1,1,'legacy',100,80,25,0.25,'NORMAL');
+        CREATE TABLE activity_daily_actual (
+            id INTEGER PRIMARY KEY,
+            activity_id INTEGER,
+            actual_date TEXT,
+            quantity REAL,
+            source TEXT,
+            notes TEXT
+        );
+        INSERT INTO activity_daily_actual(activity_id,actual_date,quantity,source)
+            VALUES(1,'2026-10-09',5,'MANUAL');
         CREATE TABLE physical_progress_entry (
             id INTEGER PRIMARY KEY,
             project_id INTEGER NOT NULL,
@@ -362,5 +384,9 @@ def test_physical_progress_migration_allows_duplicate_descriptions_by_position(t
     )
     assert conn.execute("SELECT COUNT(*) FROM physical_progress_entry").fetchone()[0] == 2
     assert conn.execute("SELECT COUNT(*) FROM physical_progress_entry WHERE source_row_no IS NULL").fetchone()[0] == 1
+    legacy_activity = conn.execute(
+        "SELECT plan_remaining_qty,remaining_qty,baseline_actual_qty FROM activity WHERE id=1"
+    ).fetchone()
+    assert tuple(legacy_activity) == (80, 75, 20)
     assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     conn.close()
