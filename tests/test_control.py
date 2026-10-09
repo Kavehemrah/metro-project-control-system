@@ -95,7 +95,7 @@ def test_legacy_activity_migration_separates_manual_actual_from_baseline(tmp_pat
         CREATE TABLE activity (
             id INTEGER PRIMARY KEY, project_id INTEGER, row_no INTEGER,
             position TEXT, zone TEXT, title TEXT, quantity REAL,
-            remaining_qty REAL, unit TEXT, start_date TEXT, finish_date TEXT,
+            remaining_qty REAL, unit TEXT, start_date TEXT, finish_date TEXT, forecast_finish TEXT,
             duration_days INTEGER, daily_target REAL, planned_qty REAL,
             actual_qty REAL, progress REAL, delay_days INTEGER, status TEXT
         );
