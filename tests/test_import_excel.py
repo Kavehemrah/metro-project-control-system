@@ -513,3 +513,41 @@ def test_reimport_removes_stale_excel_resources_and_risks_but_keeps_manual_rows(
     assert manual_resource == 1
     assert stale_risk == 0
     assert manual_risk == 1
+
+
+
+def test_daily_actuals_update_forecast_finish_from_observed_productivity(tmp_path):
+    from app.services.control import update_activity_rollup
+
+    conn = connect(tmp_path / "forecast.db")
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Forecast test')")
+    conn.execute(
+        """
+        INSERT INTO activity(
+            project_id,title,quantity,remaining_qty,actual_qty,baseline_actual_qty,source
+        ) VALUES(1,'Forecast activity',100,100,0,0,'MANUAL')
+        """
+    )
+    activity_id = conn.execute(
+        "SELECT id FROM activity WHERE title='Forecast activity'"
+    ).fetchone()[0]
+    conn.executemany(
+        """
+        INSERT INTO activity_daily_actual(activity_id,actual_date,quantity,source)
+        VALUES(?,?,?,'MANUAL')
+        """,
+        [
+            (activity_id, "2026-10-01", 10),
+            (activity_id, "2026-10-02", 10),
+        ],
+    )
+
+    update_activity_rollup(conn, activity_id)
+    forecast = conn.execute(
+        "SELECT forecast_finish,remaining_qty FROM activity WHERE id=?",
+        (activity_id,),
+    ).fetchone()
+    conn.close()
+
+    assert forecast["remaining_qty"] == 80
+    assert forecast["forecast_finish"] == "2026-10-10"
