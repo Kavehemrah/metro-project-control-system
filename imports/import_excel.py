@@ -894,6 +894,7 @@ def import_workbook(path, db_path: str | Path | None = None):
         conn.execute("DELETE FROM activity_dependency WHERE project_id=1 AND source='INFERRED'")
         conn.execute("DELETE FROM physical_progress_entry WHERE project_id=1 AND source='EXCEL'")
 
+        imported_resource_ids = set()
         for item in resources:
             existing_resource = conn.execute(
                 """
@@ -927,6 +928,7 @@ def import_workbook(path, db_path: str | Path | None = None):
                 )
                 resource_id = cursor.lastrowid
 
+            imported_resource_ids.add(resource_id)
             imported_periods = []
             for period in item["periods"]:
                 imported_periods.append(period["period"])
@@ -956,6 +958,18 @@ def import_workbook(path, db_path: str | Path | None = None):
                     (resource_id, *imported_periods),
                 )
 
+
+        # Remove Excel-owned resources that disappeared from a successfully parsed
+        # resource section. Never clean the table when parsing returned no rows.
+        if resources and imported_resource_ids:
+            placeholders = ",".join("?" for _ in imported_resource_ids)
+            conn.execute(
+                f"DELETE FROM resource WHERE project_id=1 AND source='EXCEL' AND id NOT IN ({placeholders})",
+                tuple(imported_resource_ids),
+            )
+
+        imported_risk_ids = set()
+
         for risk in risks:
             risk_values = (
                 risk["consequence"], risk["existing_controls"], risk["probability"],
@@ -966,6 +980,7 @@ def import_workbook(path, db_path: str | Path | None = None):
                 (risk["category"], risk["title"]),
             ).fetchone()
             if existing_risk:
+                imported_risk_ids.add(existing_risk["id"])
                 conn.execute(
                     """
                     UPDATE risk SET consequence=?,existing_controls=?,probability=?,impact=?,
@@ -974,7 +989,7 @@ def import_workbook(path, db_path: str | Path | None = None):
                     (*risk_values, existing_risk["id"]),
                 )
             else:
-                conn.execute(
+                cursor = conn.execute(
                     """
                     INSERT INTO risk(
                         project_id,category,title,consequence,existing_controls,
@@ -983,6 +998,16 @@ def import_workbook(path, db_path: str | Path | None = None):
                     """,
                     (risk["category"], risk["title"], *risk_values),
                 )
+                imported_risk_ids.add(cursor.lastrowid)
+
+        # Preserve manually maintained risks and avoid deleting everything when
+        # the workbook's risk sheet could not be parsed.
+        if risks and imported_risk_ids:
+            placeholders = ",".join("?" for _ in imported_risk_ids)
+            conn.execute(
+                f"DELETE FROM risk WHERE project_id=1 AND source='EXCEL' AND id NOT IN ({placeholders})",
+                tuple(imported_risk_ids),
+            )
 
         for entry in financial_entries["revenue"]:
             conn.execute(
