@@ -926,6 +926,453 @@ class RiskPage(RecordPage):
         return values
 
 
+
+class ActivityCostResourcePage(QWidget):
+    """Activity-unit cost build-up and resource capacity planning."""
+
+    COST_CATEGORIES = ["مصالح", "ماشین‌آلات", "نیروی انسانی", "پیمانکار", "حمل", "سایر"]
+
+    def __init__(self, project_id=1):
+        super().__init__()
+        self.project_id = project_id
+        self.setLayoutDirection(Qt.RightToLeft)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 20, 22, 22)
+        root.setSpacing(10)
+
+        title = QLabel("برآورد هزینه و منابع فعالیت")
+        title.setStyleSheet(f"font-size:21px;font-weight:700;color:{TEXT};")
+        root.addWidget(title)
+        note = QLabel(
+            "هزینه پایه را یک‌بار به ازای واحد خروجی فعالیت تعریف کنید؛ مبلغ برآوردی کل از ضریب × بهای واحد × حجم فعالیت به دست می‌آید. "
+            "نیروی انسانی و ماشین‌آلات بر مبنای اوج تولید برنامه‌ریزی‌شده روزانه کنترل می‌شوند؛ مصرف مصالح در دوره جمع می‌شود. "
+            "هزینه پیش‌بینی‌نشده جداگانه در دفتر مالی واقعی ثبت می‌شود."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{MUTED};")
+        root.addWidget(note)
+
+        selector_row = QHBoxLayout()
+        selector_row.addWidget(QLabel("فعالیت:"))
+        self.activity_selector = QComboBox()
+        self.activity_selector.setMinimumWidth(430)
+        selector_row.addWidget(self.activity_selector, 1)
+        self.activity_info = QLabel()
+        self.activity_info.setWordWrap(True)
+        selector_row.addWidget(self.activity_info, 1)
+        root.addLayout(selector_row)
+
+        cost_title = QLabel("ریز هزینه پایه به ازای واحد فعالیت")
+        cost_title.setStyleSheet(f"font-size:16px;font-weight:600;color:{TEXT};")
+        root.addWidget(cost_title)
+        self.cost_table = QTableWidget()
+        _configure_table(
+            self.cost_table,
+            ["دسته", "شرح هزینه", "واحد هزینه", "ضریب به ازای یک واحد فعالیت", "بهای واحد (ریال)", "هزینه به ازای واحد فعالیت", "برآورد کل فعالیت (ریال)"],
+        )
+        self.cost_table.setMinimumHeight(170)
+        root.addWidget(self.cost_table, 2)
+        cost_actions = QHBoxLayout()
+        self.add_cost_button = QPushButton("افزودن ردیف هزینه")
+        self.edit_cost_button = QPushButton("ویرایش ردیف هزینه")
+        self.delete_cost_button = QPushButton("حذف ردیف هزینه")
+        for button in (self.add_cost_button, self.edit_cost_button, self.delete_cost_button):
+            cost_actions.addWidget(button)
+        cost_actions.addStretch()
+        root.addLayout(cost_actions)
+        self.add_cost_button.clicked.connect(self.add_cost_item)
+        self.edit_cost_button.clicked.connect(self.edit_cost_item)
+        self.delete_cost_button.clicked.connect(self.delete_cost_item)
+
+        resource_title = QLabel("نیاز منابع بر اساس مقدار برنامه فعالیت")
+        resource_title.setStyleSheet(f"font-size:16px;font-weight:600;color:{TEXT};")
+        root.addWidget(resource_title)
+        self.resource_table = QTableWidget()
+        _configure_table(
+            self.resource_table,
+            ["دوره", "دسته", "منبع", "واحد منبع", "ضریب به ازای واحد فعالیت", "مقدار خروجی مبنا", "نیاز منبع", "موجود", "کمبود", "هزینه تخمینی کمبود (ریال)"],
+        )
+        self.resource_table.setMinimumHeight(170)
+        root.addWidget(self.resource_table, 2)
+        resource_actions = QHBoxLayout()
+        self.add_requirement_button = QPushButton("افزودن نیاز منبع")
+        self.edit_requirement_button = QPushButton("ویرایش نیاز منبع")
+        self.delete_requirement_button = QPushButton("حذف نیاز منبع")
+        for button in (self.add_requirement_button, self.edit_requirement_button, self.delete_requirement_button):
+            resource_actions.addWidget(button)
+        resource_actions.addStretch()
+        root.addLayout(resource_actions)
+        self.add_requirement_button.clicked.connect(self.add_requirement)
+        self.edit_requirement_button.clicked.connect(self.edit_requirement)
+        self.delete_requirement_button.clicked.connect(self.delete_requirement)
+
+        self.activity_selector.currentIndexChanged.connect(self.refresh)
+        self.refresh()
+
+    def _selected_activity(self):
+        activity_id = self.activity_selector.currentData()
+        if activity_id is None:
+            return None
+        conn = connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM activity WHERE id=? AND project_id=?",
+                (activity_id, self.project_id),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def _ensure_activity(self):
+        activity = self._selected_activity()
+        if activity is None:
+            QMessageBox.information(self, "انتخاب فعالیت", "ابتدا یک فعالیت انتخاب کنید.")
+        return activity
+
+    def refresh(self):
+        conn = connect()
+        try:
+            activities = conn.execute(
+                """
+                SELECT id,row_no,position,zone,title,unit,quantity,daily_target
+                FROM activity WHERE project_id=?
+                ORDER BY row_no,id
+                """,
+                (self.project_id,),
+            ).fetchall()
+            old_id = self.activity_selector.currentData()
+            self.activity_selector.blockSignals(True)
+            self.activity_selector.clear()
+            for activity in activities:
+                number = f"{activity['row_no']} - " if activity["row_no"] is not None else f"ID {activity['id']} - "
+                location = " / ".join(part for part in [activity["position"], activity["zone"]] if part)
+                suffix = f" ({location})" if location else ""
+                self.activity_selector.addItem(
+                    f"{number}{activity['title'] or 'فعالیت'}{suffix}",
+                    activity["id"],
+                )
+            index = self.activity_selector.findData(old_id)
+            self.activity_selector.setCurrentIndex(index if index >= 0 else (0 if activities else -1))
+            activity_id = self.activity_selector.currentData()
+            activity = next((dict(row) for row in activities if row["id"] == activity_id), None)
+            if activity:
+                self.activity_info.setText(
+                    f"حجم فعالیت: {float(activity['quantity'] or 0):,.2f} {activity['unit'] or ''} | "
+                    f"راندمان روزانه مبنا: {float(activity['daily_target'] or 0):,.2f}"
+                )
+            else:
+                self.activity_info.setText("فعالیتی ثبت نشده است.")
+
+            if activity is None:
+                cost_rows = []
+                resource_rows = []
+            else:
+                cost_rows = activity_cost_items(conn, self.project_id)
+                cost_rows = [row for row in cost_rows if row["activity_id"] == activity_id]
+                resource_rows = activity_resource_forecast(conn, self.project_id)
+                resource_rows = [row for row in resource_rows if row["activity_id"] == activity_id]
+        finally:
+            self.activity_selector.blockSignals(False)
+            conn.close()
+
+        activity_qty = float(activity["quantity"] or 0) if activity else 0.0
+        self.cost_table.setRowCount(len(cost_rows))
+        for row_index, item in enumerate(cost_rows):
+            coeff = float(item["quantity_per_activity_unit"] or 0)
+            price = float(item["unit_price"] or 0)
+            unit_cost = coeff * price
+            values = [
+                item["category"], item["item_name"], item["unit"] or "",
+                f"{coeff:,.4f}", f"{price:,.0f}", f"{unit_cost:,.0f}",
+                f"{float(item['estimated_total'] or 0):,.0f}",
+            ]
+            for column, value in enumerate(values):
+                cell = QTableWidgetItem(str(value))
+                if column == 0:
+                    cell.setData(Qt.UserRole, item["id"])
+                self.cost_table.setItem(row_index, column, cell)
+        self.cost_table.resizeColumnsToContents()
+
+        self.resource_table.setRowCount(len(resource_rows))
+        for row_index, item in enumerate(resource_rows):
+            available = item["available_qty"]
+            shortage = item["shortage_qty"]
+            shortage_cost = item["shortage_cost"]
+            values = [
+                item["period"],
+                item["category"],
+                item["resource_title"],
+                item["unit"] or item["resource_unit"] or "",
+                f"{float(item['quantity_per_activity_unit'] or 0):,.4f}",
+                f"{float(item['planned_activity_qty'] or 0):,.2f}",
+                f"{float(item['required_qty'] or 0):,.2f}",
+                f"{available:,.2f}" if available is not None else "نامشخص",
+                f"{shortage:,.2f}" if shortage is not None else "نامشخص",
+                f"{shortage_cost:,.0f}" if shortage_cost is not None else "نامشخص",
+            ]
+            for column, value in enumerate(values):
+                cell = QTableWidgetItem(str(value))
+                if column == 0:
+                    cell.setData(Qt.UserRole, item["id"])
+                self.resource_table.setItem(row_index, column, cell)
+        self.resource_table.resizeColumnsToContents()
+
+    def _cost_dialog(self, existing=None):
+        fields = [
+            ("category", "دسته هزینه", "choice", {"choices": self.COST_CATEGORIES}),
+            ("item_name", "شرح هزینه", "text", {}),
+            ("unit", "واحد هزینه", "text", {}),
+            ("quantity_per_activity_unit", "مقدار به ازای یک واحد فعالیت", "number", {"minimum": 0, "decimals": 4}),
+            ("unit_price", "بهای واحد (ریال)", "number", {"minimum": 0, "decimals": 0}),
+            ("notes", "توضیحات", "text", {}),
+        ]
+        dialog = RecordDialog(
+            "ویرایش ریز هزینه" if existing else "تعریف هزینه به ازای واحد فعالیت",
+            fields,
+            dict(existing or {}),
+            self,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        values = dialog.values()
+        if not values["item_name"]:
+            QMessageBox.warning(self, "ورودی ناقص", "شرح هزینه الزامی است.")
+            return None
+        return values
+
+    def _selected_cost_item(self):
+        row = self.cost_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "انتخاب ردیف", "یک ردیف از جدول هزینه پایه انتخاب کنید.")
+            return None
+        cell = self.cost_table.item(row, 0)
+        item_id = cell.data(Qt.UserRole) if cell else None
+        conn = connect()
+        try:
+            item = conn.execute(
+                "SELECT * FROM activity_cost_item WHERE id=? AND project_id=?",
+                (item_id, self.project_id),
+            ).fetchone()
+            return dict(item) if item else None
+        finally:
+            conn.close()
+
+    def add_cost_item(self):
+        activity = self._ensure_activity()
+        if not activity:
+            return
+        values = self._cost_dialog()
+        if values is None:
+            return
+        conn = connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO activity_cost_item(
+                    project_id,activity_id,category,item_name,unit,
+                    quantity_per_activity_unit,unit_price,notes,source
+                ) VALUES(?,?,?,?,?,?,?,?, 'MANUAL')
+                """,
+                (
+                    self.project_id, activity["id"], values["category"], values["item_name"],
+                    values["unit"], values["quantity_per_activity_unit"],
+                    values["unit_price"], values["notes"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self.refresh()
+
+    def edit_cost_item(self):
+        current = self._selected_cost_item()
+        if not current:
+            return
+        values = self._cost_dialog(current)
+        if values is None:
+            return
+        activity = self._ensure_activity()
+        if not activity:
+            return
+        conn = connect()
+        try:
+            conn.execute(
+                """
+                UPDATE activity_cost_item SET activity_id=?,category=?,item_name=?,unit=?,
+                    quantity_per_activity_unit=?,unit_price=?,notes=?,source='MANUAL'
+                WHERE id=? AND project_id=?
+                """,
+                (
+                    activity["id"], values["category"], values["item_name"], values["unit"],
+                    values["quantity_per_activity_unit"], values["unit_price"], values["notes"],
+                    current["id"], self.project_id,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self.refresh()
+
+    def delete_cost_item(self):
+        current = self._selected_cost_item()
+        if not current:
+            return
+        answer = QMessageBox.question(self, "تأیید حذف", f"هزینه «{current['item_name']}» حذف شود؟")
+        if answer != QMessageBox.Yes:
+            return
+        conn = connect()
+        try:
+            conn.execute(
+                "DELETE FROM activity_cost_item WHERE id=? AND project_id=?",
+                (current["id"], self.project_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self.refresh()
+
+    def _resource_dialog(self, existing=None):
+        activity = self._ensure_activity()
+        if not activity:
+            return None
+        conn = connect()
+        try:
+            resource_records = conn.execute(
+                """
+                SELECT id,category,title,unit FROM resource
+                WHERE project_id=? ORDER BY category,title
+                """,
+                (self.project_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        if not resource_records:
+            QMessageBox.information(
+                self, "تعریف منبع", "ابتدا ماشین‌آلات، نیروی انسانی و مصالح را در صفحه منابع تعریف یا از Excel وارد کنید."
+            )
+            return None
+        choices = []
+        for item in resource_records:
+            label = f"{item['category'] or 'منبع'} — {item['title'] or 'بدون عنوان'}"
+            if item["unit"]:
+                label += f" ({item['unit']})"
+            choices.append((item["id"], label))
+        fields = [
+            ("resource_id", "منبع", "resource", {"choices": choices}),
+            ("quantity_per_activity_unit", "نیاز به ازای یک واحد فعالیت", "number", {"minimum": 0, "decimals": 4}),
+            ("notes", "توضیحات", "text", {}),
+        ]
+        dialog = RecordDialog(
+            "ویرایش ضریب مصرف منبع" if existing else "تعریف نیاز منبع برای واحد فعالیت",
+            fields,
+            dict(existing or {}),
+            self,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        values = dialog.values()
+        if values["resource_id"] is None:
+            QMessageBox.warning(self, "انتخاب منبع", "یک منبع معتبر انتخاب کنید.")
+            return None
+        source = next((r for r in resource_records if r["id"] == values["resource_id"]), None)
+        if source is None:
+            QMessageBox.warning(self, "منبع نامعتبر", "منبع انتخاب‌شده پیدا نشد.")
+            return None
+        values.update(
+            category=source["category"] or "سایر",
+            resource_title=source["title"] or "منبع",
+            unit=source["unit"],
+        )
+        return values, activity
+
+    def _selected_requirement(self):
+        row = self.resource_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "انتخاب ردیف", "یک ردیف از جدول نیاز منابع انتخاب کنید.")
+            return None
+        cell = self.resource_table.item(row, 0)
+        requirement_id = cell.data(Qt.UserRole) if cell else None
+        conn = connect()
+        try:
+            item = conn.execute(
+                "SELECT * FROM activity_resource_requirement WHERE id=? AND project_id=?",
+                (requirement_id, self.project_id),
+            ).fetchone()
+            return dict(item) if item else None
+        finally:
+            conn.close()
+
+    def add_requirement(self):
+        result = self._resource_dialog()
+        if result is None:
+            return
+        values, activity = result
+        conn = connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO activity_resource_requirement(
+                    project_id,activity_id,resource_id,category,resource_title,unit,
+                    quantity_per_activity_unit,notes,source
+                ) VALUES(?,?,?,?,?,?,?,?, 'MANUAL')
+                """,
+                (
+                    self.project_id, activity["id"], values["resource_id"], values["category"],
+                    values["resource_title"], values["unit"],
+                    values["quantity_per_activity_unit"], values["notes"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self.refresh()
+
+    def edit_requirement(self):
+        current = self._selected_requirement()
+        if not current:
+            return
+        result = self._resource_dialog(current)
+        if result is None:
+            return
+        values, activity = result
+        conn = connect()
+        try:
+            conn.execute(
+                """
+                UPDATE activity_resource_requirement SET activity_id=?,resource_id=?,category=?,
+                    resource_title=?,unit=?,quantity_per_activity_unit=?,notes=?,source='MANUAL'
+                WHERE id=? AND project_id=?
+                """,
+                (
+                    activity["id"], values["resource_id"], values["category"], values["resource_title"],
+                    values["unit"], values["quantity_per_activity_unit"], values["notes"],
+                    current["id"], self.project_id,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self.refresh()
+
+    def delete_requirement(self):
+        current = self._selected_requirement()
+        if not current:
+            return
+        answer = QMessageBox.question(self, "تأیید حذف", f"نیاز منبع «{current['resource_title']}» حذف شود؟")
+        if answer != QMessageBox.Yes:
+            return
+        conn = connect()
+        try:
+            conn.execute(
+                "DELETE FROM activity_resource_requirement WHERE id=? AND project_id=?",
+                (current["id"], self.project_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self.refresh()
+
+
 class FinancePage(QWidget):
     def __init__(self):
         super().__init__()
