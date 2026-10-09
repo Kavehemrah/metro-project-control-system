@@ -455,9 +455,25 @@ class ResourcePage(RecordPage):
             SELECT resource.*,
                    COALESCE((
                        SELECT GROUP_CONCAT(
-                           resource_period.period || ': ' ||
-                           printf('%.2f', resource_period.required_qty),
-                           ' | '
+                           resource_period.period || ': نیاز ' ||
+                           printf('%.2f', resource_period.required_qty) ||
+                           ' | موجودی اول دوره ' ||
+                           CASE WHEN resource_period.opening_stock IS NULL
+                                THEN 'نامشخص'
+                                ELSE printf('%.2f', resource_period.opening_stock) END ||
+                           ' | خرید ' ||
+                           CASE WHEN resource_period.purchase_qty IS NULL
+                                THEN 'نامشخص'
+                                ELSE printf('%.2f', resource_period.purchase_qty) END ||
+                           ' | موجود/تأمین ' ||
+                           CASE WHEN resource_period.available_qty IS NULL
+                                THEN 'نامشخص'
+                                ELSE printf('%.2f', resource_period.available_qty) END ||
+                           ' | بهای واحد ' ||
+                           CASE WHEN resource_period.unit_price IS NULL
+                                THEN 'نامشخص'
+                                ELSE printf('%.0f', resource_period.unit_price) END,
+                           ' || '
                        )
                        FROM resource_period
                        WHERE resource_period.resource_id=resource.id
