@@ -41,6 +41,19 @@ def finance_performance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
         row["source"] == "EXCEL_ACTIVITY" and row["activity_id"] is not None
         for row in revenue_rows
     )
+    contract_row = conn.execute(
+        "SELECT COALESCE(contract_value,0) AS contract_value FROM project WHERE id=?",
+        (project_id,),
+    ).fetchone()
+    contract_value = max(0.0, float(contract_row["contract_value"] or 0)) if contract_row else 0.0
+    revenue_activity_count = int(
+        conn.execute(
+            "SELECT COUNT(DISTINCT activity_id) FROM revenue_entry "
+            "WHERE project_id=? AND activity_id IS NOT NULL "
+            "AND source IN ('EXCEL_ACTIVITY','MANUAL')",
+            (project_id,),
+        ).fetchone()[0]
+    )
     revenue_linked = 0.0
     revenue_unallocated = 0.0
     revenue_summary_reference = 0.0
@@ -131,6 +144,21 @@ def finance_performance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
     cost_model_coverage_pct = (
         budgeted_activity_count / total_activity_count * 100.0 if total_activity_count else 0.0
     )
+    revenue_coverage_pct = (
+        revenue_linked / contract_value * 100.0 if contract_value > 0 else None
+    )
+    revenue_contract_difference = (
+        contract_value - revenue_linked if contract_value > 0 else None
+    )
+    zero_cost_item_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) FROM activity_cost_item
+            WHERE project_id=? AND (quantity_per_activity_unit<=0 OR unit_price<=0)
+            """,
+            (project_id,),
+        ).fetchone()[0]
+    )
     eac_is_partial = (
         budgeted_activity_count < total_activity_count
         or unplanned_cost_on_unbudgeted_activities > 0
@@ -147,6 +175,11 @@ def finance_performance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
         "unplanned_actual_cost": float(actual["unplanned_actual_cost"] or 0),
         "unplanned_cost_applied_to_forecast": unplanned_cost_applied,
         "unplanned_cost_on_unbudgeted_activities": unplanned_cost_on_unbudgeted_activities,
+        "contract_value": contract_value,
+        "revenue_activity_count": revenue_activity_count,
+        "revenue_coverage_pct": revenue_coverage_pct,
+        "revenue_contract_difference": revenue_contract_difference,
+        "zero_cost_item_count": zero_cost_item_count,
         "revenue_budget_linked": revenue_linked,
         "revenue_budget_unallocated": revenue_unallocated,
         "revenue_summary_reference": revenue_summary_reference,
