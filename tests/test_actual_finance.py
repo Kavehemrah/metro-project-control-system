@@ -104,3 +104,43 @@ def test_budget_forecast_does_not_require_daily_actual_cost_records(tmp_path):
     assert result["cpi"] is None
     assert result["etc_assessed"] is None
     assert result["eac_is_partial"] is False
+
+
+def test_contract_revenue_coverage_excludes_excel_summary_reference_from_activity_total(tmp_path):
+    conn = connect(tmp_path / "revenue-coverage.db")
+    conn.execute(
+        "INSERT INTO project(id,name,contract_value) VALUES(1,'Coverage test',10000)"
+    )
+    activity_id = _activity(conn, "Activity with revenue basis", 10, 5)
+    conn.execute(
+        """
+        INSERT INTO revenue_entry(project_id,activity_id,period,category,amount,source)
+        VALUES(1,?,'کل پروژه','درآمد فعالیت',4000,'EXCEL_ACTIVITY')
+        """,
+        (activity_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO revenue_entry(project_id,activity_id,period,category,amount,source)
+        VALUES(1,NULL,'دوره گزارش','خلاصه درآمد Excel',10000,'EXCEL')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO activity_cost_item(
+            project_id,activity_id,category,item_name,unit,
+            quantity_per_activity_unit,unit_price,source
+        ) VALUES(1,?,'مصالح','ردیف ناقص','کیلوگرم',0,250,'MANUAL')
+        """,
+        (activity_id,),
+    )
+
+    result = finance_performance(conn, 1)
+    conn.close()
+
+    assert result["contract_value"] == 10000
+    assert result["revenue_budget_linked"] == 4000
+    assert result["revenue_summary_reference"] == 10000
+    assert result["revenue_coverage_pct"] == 40
+    assert result["revenue_contract_difference"] == 6000
+    assert result["zero_cost_item_count"] == 1
