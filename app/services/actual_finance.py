@@ -59,11 +59,12 @@ def finance_performance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
     revenue_summary_reference = 0.0
     for row in revenue_rows:
         amount = float(row["amount"] or 0)
-        if row["activity_id"] is not None:
-            revenue_linked += amount
-        elif physical_revenue_available and row["source"] == "EXCEL":
-            # Aggregate Excel period figures are references, not additional activity budgets.
+        if physical_revenue_available and row["source"] == "EXCEL":
+            # Summary-period Excel figures remain references even if a user selects an
+            # activity for a progress-weighted view; they are not unit-rate activity budgets.
             revenue_summary_reference += amount
+        elif row["activity_id"] is not None:
+            revenue_linked += amount
         else:
             revenue_unallocated += amount
 
