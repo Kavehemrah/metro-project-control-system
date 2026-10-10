@@ -1554,20 +1554,21 @@ class FinancePage(QWidget):
             coverage_text = f"{coverage:,.1f}٪" if coverage is not None else "نامشخص"
             difference = performance["revenue_contract_difference"]
             difference_text = f"{difference:,.0f} ریال"
+            cost_difference = performance["cost_summary_difference"]
+            cost_difference_text = (
+                f"{cost_difference:,.0f} ریال"
+                if cost_difference is not None
+                else "قابل محاسبه نیست؛ دامنه یا دوره زمانی قابل تطبیق نیست"
+            )
             self.coverage_summary.setText(
                 f"کنترل پوشش درآمد قرارداد: مبلغ قرارداد {performance['contract_value']:,.0f} ریال؛ "
                 f"جمع مبالغ درآمد متصل به فعالیت‌ها {performance['revenue_budget_linked']:,.0f} ریال؛ "
                 f"پوشش فعلی {coverage_text}؛ فاصله تا مبلغ قرارداد {difference_text}. "
-                f"این شاخص فقط میزان پوشش مبالغ فعالیتی ثبت‌شده را نشان می‌دهد و به‌تنهایی تأییدکننده کامل بودن صورت‌وضعیت یا درآمد قابل وصول نیست. "
-                f"برآورد هزینه پایه فعالیت‌ها {performance['cost_budget_linked']:,.0f} ریال است؛ "
-                f"جمع مرجع هزینه دوره‌ای Excel {performance['cost_summary_reference']:,.0f} ریال و اختلاف عددی آن‌ها "
-                f"{performance['cost_summary_difference']:,.0f} ریال است."
-                if performance["cost_summary_difference"] is not None
-                else
-                f"این شاخص فقط میزان پوشش مبالغ فعالیتی ثبت‌شده را نشان می‌دهد و به‌تنهایی تأییدکننده کامل بودن صورت‌وضعیت یا درآمد قابل وصول نیست. "
-                f"برآورد هزینه پایه فعالیت‌ها {performance['cost_budget_linked']:,.0f} ریال است؛ "
-                f"جمع مرجع هزینه دوره‌ای Excel {performance['cost_summary_reference']:,.0f} ریال است. "
-                f"اختلاف فقط پس از تطبیق دامنه و دوره زمانی دو مبلغ قابل تفسیر است."
+                f"برآورد هزینه پایه فعالیت‌ها {performance['cost_budget_linked']:,.0f} ریال؛ "
+                f"جمع مرجع هزینه دوره‌ای Excel {performance['cost_summary_reference']:,.0f} ریال؛ "
+                f"اختلاف عددی {cost_difference_text}. "
+                "این ارقام ابزار کنترل پوشش‌اند؛ اختلاف هزینه فقط پس از تطبیق دامنه و دوره زمانی قابل تفسیر است "
+                "و پوشش درآمد به‌تنهایی تأییدکننده کامل بودن صورت‌وضعیت یا درآمد قابل وصول نیست."
             )
         else:
             self.coverage_summary.setText(
