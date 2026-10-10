@@ -1401,6 +1401,10 @@ class FinancePage(QWidget):
         self.actual_summary.setWordWrap(True)
         self.actual_summary.setStyleSheet(f"font-size:14px;color:{TEXT};")
         layout.addWidget(self.actual_summary)
+        self.coverage_summary = QLabel()
+        self.coverage_summary.setWordWrap(True)
+        self.coverage_summary.setStyleSheet(f"font-size:14px;color:{BLUE};")
+        layout.addWidget(self.coverage_summary)
         actual_title = QLabel("دفتر درآمد و هزینه واقعی")
         actual_title.setStyleSheet(f"font-size:17px;font-weight:600;color:{TEXT};")
         layout.addWidget(actual_title)
@@ -1544,6 +1548,29 @@ class FinancePage(QWidget):
             selector.setCurrentIndex(index if index >= 0 else 0)
             self.allocations_table.setCellWidget(row_index, 4, selector)
         self.allocations_table.resizeColumnsToContents()
+
+        if performance["contract_value"] > 0:
+            coverage = performance["revenue_coverage_pct"]
+            coverage_text = f"{coverage:,.1f}٪" if coverage is not None else "نامشخص"
+            difference = performance["revenue_contract_difference"]
+            difference_text = f"{difference:,.0f} ریال"
+            self.coverage_summary.setText(
+                f"کنترل پوشش درآمد قرارداد: مبلغ قرارداد {performance['contract_value']:,.0f} ریال؛ "
+                f"جمع مبالغ درآمد متصل به فعالیت‌ها {performance['revenue_budget_linked']:,.0f} ریال؛ "
+                f"پوشش فعلی {coverage_text}؛ فاصله تا مبلغ قرارداد {difference_text}. "
+                f"این شاخص فقط میزان پوشش مبالغ فعالیتی ثبت‌شده را نشان می‌دهد و به‌تنهایی تأییدکننده کامل بودن صورت‌وضعیت یا درآمد قابل وصول نیست."
+            )
+        else:
+            self.coverage_summary.setText(
+                f"مبلغ قرارداد در اطلاعات پروژه صفر یا تعریف‌نشده است؛ پوشش درآمد قابل محاسبه نیست. "
+                f"مبالغ درآمد متصل به فعالیت‌ها: {performance['revenue_budget_linked']:,.0f} ریال."
+            )
+        if performance["zero_cost_item_count"]:
+            self.coverage_summary.setText(
+                self.coverage_summary.text()
+                + f" هشدار: {performance['zero_cost_item_count']} ردیف ریزهزینه دارای ضریب یا بهای واحد صفر است؛ "
+                "این ردیف‌ها در برآورد مثبت هزینه فعالیت سهمی ندارند و باید بررسی شوند."
+            )
 
         self.table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
