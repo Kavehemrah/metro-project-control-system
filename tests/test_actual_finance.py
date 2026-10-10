@@ -122,8 +122,9 @@ def test_contract_revenue_coverage_excludes_excel_summary_reference_from_activit
     conn.execute(
         """
         INSERT INTO revenue_entry(project_id,activity_id,period,category,amount,source)
-        VALUES(1,NULL,'دوره گزارش','خلاصه درآمد Excel',10000,'EXCEL')
-        """
+        VALUES(1,?,'دوره گزارش','خلاصه درآمد Excel',10000,'EXCEL')
+        """,
+        (activity_id,),
     )
     conn.execute(
         """
