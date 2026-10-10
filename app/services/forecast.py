@@ -13,6 +13,7 @@ from datetime import date, timedelta
 
 from app.services.control import activity_control, forecast_finish
 from app.services.dates import normalize_date
+from app.services.activity_costs import activity_cost_budgets
 
 
 def _as_date(value) -> date | None:
@@ -230,23 +231,40 @@ def forecast_finance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
     Imported summary rows without activity_id remain unallocated.
     """
     result = {}
+    unit_cost_budgets = activity_cost_budgets(conn, project_id)
     for table, name in (("revenue_entry", "revenue"), ("cost_entry", "cost")):
         rows = conn.execute(
             f"""
-            SELECT id, activity_id, amount FROM {table}
-            WHERE project_id=? AND source IN ('EXCEL','MANUAL')
+            SELECT id, activity_id, amount, source FROM {table}
+            WHERE project_id=? AND source IN ('EXCEL','MANUAL','EXCEL_ACTIVITY')
             """,
             (project_id,),
         ).fetchall()
+        has_activity_revenue = name == "revenue" and any(
+            row["source"] == "EXCEL_ACTIVITY" and row["activity_id"] is not None
+            for row in rows
+        )
+        has_activity_cost_budget = name == "cost" and bool(unit_cost_budgets)
         linked_budget = 0.0
         earned_to_date = 0.0
         unallocated = 0.0
+        summary_reference = 0.0
         linked_count = 0
         for entry in rows:
             amount = float(entry["amount"] or 0)
             activity_id = entry["activity_id"]
+            if name == "cost" and activity_id in unit_cost_budgets:
+                # The per-unit cost build-up is the authoritative budget for this activity.
+                # Do not add an older flat cost_entry allocation on top of it.
+                continue
             if activity_id is None:
-                unallocated += amount
+                if (
+                    (has_activity_revenue and name == "revenue" and entry["source"] == "EXCEL")
+                    or (has_activity_cost_budget and name == "cost" and entry["source"] == "EXCEL")
+                ):
+                    summary_reference += amount
+                else:
+                    unallocated += amount
                 continue
             activity = conn.execute(
                 "SELECT quantity FROM activity WHERE id=? AND project_id=?",
@@ -261,11 +279,28 @@ def forecast_finance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
             linked_budget += amount
             earned_to_date += amount * progress_fraction
             linked_count += 1
+
+        if name == "cost":
+            for activity_id, amount in unit_cost_budgets.items():
+                activity = conn.execute(
+                    "SELECT quantity FROM activity WHERE id=? AND project_id=?",
+                    (activity_id, project_id),
+                ).fetchone()
+                if activity is None:
+                    continue
+                control = activity_control(conn, activity_id)
+                progress_fraction = min(1.0, max(0.0, control["physical_progress_pct"] / 100.0))
+                linked_budget += amount
+                earned_to_date += amount * progress_fraction
+                linked_count += 1
+
         result[name] = {
             "linked_budget": linked_budget,
             "earned_to_date": earned_to_date,
             "forecast_at_completion": linked_budget,
             "unallocated_amount": unallocated,
+            "summary_reference_amount": summary_reference,
+            "summary_reconciliation_difference": summary_reference - linked_budget if summary_reference else None,
             "linked_entries": linked_count,
             "coverage_pct": (
                 linked_budget / (linked_budget + unallocated) * 100.0

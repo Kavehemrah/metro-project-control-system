@@ -10,6 +10,7 @@ import openpyxl
 from app.db import connect
 from app.services.control import activity_control, detect_finance_discrepancy, scan_formula_errors
 from app.services.forecast import calculate_schedule
+from app.services.activity_costs import sync_activity_revenue_from_physical
 
 
 def _clean_text(value) -> str:
@@ -1042,10 +1043,22 @@ def import_workbook(path, db_path: str | Path | None = None):
         # Do not destroy the existing model when a workbook layout cannot be parsed.
         if operational:
             imported_activity_ids = set()
+            activity_ids_by_key = {}
             for item in operational:
-                imported_activity_ids.add(
-                    _upsert_activity(conn, item, physical, item["row_no"])
+                activity_id = _upsert_activity(conn, item, physical, item["row_no"])
+                imported_activity_ids.add(activity_id)
+                activity_key = (
+                    _normal_key(item["position"]),
+                    _normal_key(item["zone"]),
+                    _normal_key(item["title"]),
                 )
+                activity_ids_by_key[activity_key] = activity_id
+
+            # Tie each physical-progress row's total revenue basis (unit rate × total quantity)
+            # to the same normalized activity identity used by the Excel importer.
+            sync_activity_revenue_from_physical(
+                conn, physical, activity_ids_by_key, project_id=1
+            )
             infer_activity_dependencies = __import__('app.services.control', fromlist=['infer_activity_dependencies']).infer_activity_dependencies
             infer_activity_dependencies(conn, 1)
             schedule_result = calculate_schedule(conn, 1, persist=True)

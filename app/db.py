@@ -166,9 +166,25 @@ CREATE TABLE IF NOT EXISTS actual_finance_entry (
     category TEXT NOT NULL,
     amount REAL NOT NULL DEFAULT 0 CHECK(amount >= 0),
     notes TEXT,
+    is_unplanned INTEGER NOT NULL DEFAULT 0,
     source TEXT DEFAULT 'MANUAL',
     FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE,
     FOREIGN KEY(activity_id) REFERENCES activity(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS activity_cost_item (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL,
+    activity_id INTEGER NOT NULL,
+    category TEXT NOT NULL DEFAULT 'سایر',
+    item_name TEXT NOT NULL,
+    unit TEXT,
+    quantity_per_activity_unit REAL NOT NULL DEFAULT 1 CHECK(quantity_per_activity_unit >= 0),
+    unit_price REAL NOT NULL DEFAULT 0 CHECK(unit_price >= 0),
+    notes TEXT,
+    source TEXT DEFAULT 'MANUAL',
+    FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE,
+    FOREIGN KEY(activity_id) REFERENCES activity(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS resource (
@@ -197,6 +213,22 @@ CREATE TABLE IF NOT EXISTS resource_period (
     source TEXT DEFAULT 'MANUAL',
     FOREIGN KEY(resource_id) REFERENCES resource(id) ON DELETE CASCADE,
     UNIQUE(resource_id, period, source)
+);
+
+CREATE TABLE IF NOT EXISTS activity_resource_requirement (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL,
+    activity_id INTEGER NOT NULL,
+    resource_id INTEGER,
+    category TEXT NOT NULL,
+    resource_title TEXT NOT NULL,
+    unit TEXT,
+    quantity_per_activity_unit REAL NOT NULL DEFAULT 0 CHECK(quantity_per_activity_unit >= 0),
+    notes TEXT,
+    source TEXT DEFAULT 'MANUAL',
+    FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE,
+    FOREIGN KEY(activity_id) REFERENCES activity(id) ON DELETE CASCADE,
+    FOREIGN KEY(resource_id) REFERENCES resource(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS risk (
@@ -273,6 +305,15 @@ def _add_missing_columns(conn):
                 conn.execute(
                     "UPDATE activity SET source='EXCEL' WHERE row_no IS NOT NULL"
                 )
+
+    finance_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(actual_finance_entry)").fetchall()
+    }
+    if "is_unplanned" not in finance_columns:
+        conn.execute(
+            "ALTER TABLE actual_finance_entry ADD COLUMN is_unplanned INTEGER NOT NULL DEFAULT 0"
+        )
 
     monthly_columns = {
         row["name"]

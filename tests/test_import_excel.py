@@ -99,7 +99,8 @@ def test_workbook_import_includes_resource_sheets(tmp_path):
     tunnel4_transfer = conn.execute(
         "SELECT title,start_date,finish_date FROM activity WHERE project_id=1 AND row_no=13"
     ).fetchone()
-    revenue_entries = conn.execute("SELECT COUNT(*) FROM revenue_entry WHERE project_id=1").fetchone()[0]
+    revenue_entries = conn.execute("SELECT COUNT(*) FROM revenue_entry WHERE project_id=1 AND source='EXCEL'").fetchone()[0]
+    activity_revenue_entries = conn.execute("SELECT COUNT(*) FROM revenue_entry WHERE project_id=1 AND source='EXCEL_ACTIVITY' AND activity_id IS NOT NULL").fetchone()[0]
     cost_entries = conn.execute("SELECT COUNT(*) FROM cost_entry WHERE project_id=1").fetchone()[0]
     dependencies = conn.execute("SELECT COUNT(*) FROM activity_dependency WHERE project_id=1").fetchone()[0]
     monthly = {
@@ -202,7 +203,8 @@ def test_workbook_import_includes_resource_sheets(tmp_path):
     assert first_risk["consequence"] and first_risk["existing_controls"] == "--"
     assert tunnel4 >= 1, "Tunnel 4 operational activity should be imported"
     assert tuple(tunnel4_transfer) == ("انتقال ریل به دهانه تونل", "2026-09-29", "2026-10-18")
-    assert revenue_entries == 6, "Revenue line items from both months should be imported"
+    assert revenue_entries == 6, "Aggregate revenue line items from both months should be imported"
+    assert activity_revenue_entries > 0, "Physical-progress unit rates should create activity-linked revenue budgets"
     assert cost_entries == 12, "All six cost categories from both months should be imported"
     assert balance_category_entries == 0, "Project balance must not be stored as a cost"
     assert dependencies > 0, "Activity dependencies should be inferred from workbook sequencing"
