@@ -1558,7 +1558,16 @@ class FinancePage(QWidget):
                 f"کنترل پوشش درآمد قرارداد: مبلغ قرارداد {performance['contract_value']:,.0f} ریال؛ "
                 f"جمع مبالغ درآمد متصل به فعالیت‌ها {performance['revenue_budget_linked']:,.0f} ریال؛ "
                 f"پوشش فعلی {coverage_text}؛ فاصله تا مبلغ قرارداد {difference_text}. "
-                f"این شاخص فقط میزان پوشش مبالغ فعالیتی ثبت‌شده را نشان می‌دهد و به‌تنهایی تأییدکننده کامل بودن صورت‌وضعیت یا درآمد قابل وصول نیست."
+                f"این شاخص فقط میزان پوشش مبالغ فعالیتی ثبت‌شده را نشان می‌دهد و به‌تنهایی تأییدکننده کامل بودن صورت‌وضعیت یا درآمد قابل وصول نیست. "
+                f"برآورد هزینه پایه فعالیت‌ها {performance['cost_budget_linked']:,.0f} ریال است؛ "
+                f"جمع مرجع هزینه دوره‌ای Excel {performance['cost_summary_reference']:,.0f} ریال و اختلاف عددی آن‌ها "
+                f"{performance['cost_summary_difference']:,.0f} ریال است."
+                if performance["cost_summary_difference"] is not None
+                else
+                f"این شاخص فقط میزان پوشش مبالغ فعالیتی ثبت‌شده را نشان می‌دهد و به‌تنهایی تأییدکننده کامل بودن صورت‌وضعیت یا درآمد قابل وصول نیست. "
+                f"برآورد هزینه پایه فعالیت‌ها {performance['cost_budget_linked']:,.0f} ریال است؛ "
+                f"جمع مرجع هزینه دوره‌ای Excel {performance['cost_summary_reference']:,.0f} ریال است. "
+                f"اختلاف فقط پس از تطبیق دامنه و دوره زمانی دو مبلغ قابل تفسیر است."
             )
         else:
             self.coverage_summary.setText(
