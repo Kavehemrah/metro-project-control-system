@@ -247,6 +247,16 @@ CREATE TABLE IF NOT EXISTS risk (
     FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS calendar_holiday (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL,
+    holiday_date TEXT NOT NULL,
+    title TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'MANUAL',
+    FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE,
+    UNIQUE(project_id, holiday_date)
+);
+
 CREATE TABLE IF NOT EXISTS discrepancy (
     id INTEGER PRIMARY KEY,
     project_id INTEGER NOT NULL,
