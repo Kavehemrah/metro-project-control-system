@@ -30,6 +30,7 @@ from .db import connect
 from .services.control import activity_control, update_activity_rollup
 from .services.dates import format_date, normalize_date
 from .services.forecast import calculate_schedule, forecast_finance
+from .services.schedule_analysis import analyze_critical_path
 from .services.actual_finance import finance_performance, record_actual
 from .services.activity_costs import (
     activity_cost_items,
@@ -356,6 +357,9 @@ class ActivityPage(RecordPage):
         self.dependency_button = QPushButton("مدیریت پیش‌نیازها")
         self.dependency_button.clicked.connect(self.manage_dependencies)
         self.layout().itemAt(2).layout().addWidget(self.dependency_button)
+        self.critical_path_button = QPushButton("تحلیل مسیر بحرانی")
+        self.critical_path_button.clicked.connect(self.show_critical_path)
+        self.layout().itemAt(2).layout().addWidget(self.critical_path_button)
         if progress_only:
             self.add_button.setText("ثبت عملکرد روزانه")
             self.edit_button.setText("ثبت عملکرد")
@@ -382,6 +386,52 @@ class ActivityPage(RecordPage):
         self.search_filter.textChanged.connect(self.refresh)
         self._updating_filter_choices = False
         self.refresh()
+
+    def show_critical_path(self):
+        conn = connect()
+        try:
+            activities = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT id, title, duration_days, start_date FROM activity WHERE project_id=? ORDER BY row_no, id",
+                    (self.project_id,),
+                ).fetchall()
+            ]
+            dependencies = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT activity_id, predecessor_activity_id, relation_type, lag_days FROM activity_dependency WHERE project_id=?",
+                    (self.project_id,),
+                ).fetchall()
+            ]
+            result = analyze_critical_path(activities, dependencies)
+        finally:
+            conn.close()
+
+        if result["cycle"]:
+            QMessageBox.warning(
+                self,
+                "خطای مسیر بحرانی",
+                "در وابستگی فعالیت‌ها چرخه وجود دارد؛ مسیر بحرانی قابل محاسبه نیست. فعالیت‌ها: "
+                + "، ".join(result.get("cycle_titles", [])),
+            )
+            return
+        critical = [item for item in result["activities"] if item["critical"]]
+        lines = [
+            f"مدت کل محاسباتی پروژه: {result['project_duration_workdays']} روز کاری",
+            f"تعداد فعالیت‌های بحرانی: {len(critical)}",
+            "",
+        ]
+        for item in critical:
+            start = format_date(item["earliest_start"]) if item["earliest_start"] else "—"
+            finish = format_date(item["earliest_finish"]) if item["earliest_finish"] else "—"
+            lines.append(f"{item['title']} | شروع: {start} | پایان: {finish}")
+        lines.extend([
+            "",
+            "تقویم فعلی: شنبه تا پنج‌شنبه کاری و جمعه تعطیل است. تعطیلات رسمی هنوز از رابط کاربری تعریف نمی‌شوند.",
+            "این تحلیل مستقل است و تاریخ‌های پیش‌بینی فعلی برنامه را تغییر نمی‌دهد.",
+        ])
+        QMessageBox.information(self, "تحلیل مسیر بحرانی", "\n".join(lines))
 
     def _populate_activity_filters(self, records):
         if not hasattr(self, "position_filter") or self._updating_filter_choices:
