@@ -360,6 +360,9 @@ class ActivityPage(RecordPage):
         self.critical_path_button = QPushButton("تحلیل مسیر بحرانی")
         self.critical_path_button.clicked.connect(self.show_critical_path)
         self.layout().itemAt(2).layout().addWidget(self.critical_path_button)
+        self.holiday_button = QPushButton("مدیریت تعطیلات")
+        self.holiday_button.clicked.connect(self.manage_holidays)
+        self.layout().itemAt(2).layout().addWidget(self.holiday_button)
         if progress_only:
             self.add_button.setText("ثبت عملکرد روزانه")
             self.edit_button.setText("ثبت عملکرد")
@@ -404,7 +407,14 @@ class ActivityPage(RecordPage):
                     (self.project_id,),
                 ).fetchall()
             ]
-            result = analyze_critical_path(activities, dependencies)
+            holidays = [
+                row["holiday_date"]
+                for row in conn.execute(
+                    "SELECT holiday_date FROM calendar_holiday WHERE project_id=? ORDER BY holiday_date",
+                    (self.project_id,),
+                ).fetchall()
+            ]
+            result = analyze_critical_path(activities, dependencies, holidays=holidays)
         finally:
             conn.close()
 
@@ -428,10 +438,148 @@ class ActivityPage(RecordPage):
             lines.append(f"{item['title']} | شروع: {start} | پایان: {finish}")
         lines.extend([
             "",
-            "تقویم فعلی: شنبه تا پنج‌شنبه کاری و جمعه تعطیل است. تعطیلات رسمی هنوز از رابط کاربری تعریف نمی‌شوند.",
+            f"تقویم کاری: شنبه تا پنج‌شنبه؛ جمعه تعطیل. تعطیلات ثبت‌شده: {len(holidays)} روز.",
             "این تحلیل مستقل است و تاریخ‌های پیش‌بینی فعلی برنامه را تغییر نمی‌دهد.",
         ])
         QMessageBox.information(self, "تحلیل مسیر بحرانی", "\n".join(lines))
+
+    def manage_holidays(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("مدیریت تعطیلات تقویم کاری")
+        dialog.setLayoutDirection(Qt.RightToLeft)
+        dialog.resize(720, 460)
+        root = QVBoxLayout(dialog)
+        note = QLabel(
+            "تاریخ را شمسی وارد کنید. تعطیلات ثبت‌شده فقط در تحلیل مسیر بحرانی اثر دارند؛ "
+            "موتور پیش‌بینی تقویمی فعلی تغییر نمی‌کند."
+        )
+        note.setWordWrap(True)
+        root.addWidget(note)
+        table = QTableWidget()
+        _configure_table(table, ["تاریخ تعطیلی", "شرح", "منبع"])
+        root.addWidget(table)
+
+        def load_holidays():
+            conn = connect()
+            try:
+                rows = conn.execute(
+                    "SELECT id, holiday_date, title, source FROM calendar_holiday "
+                    "WHERE project_id=? ORDER BY holiday_date",
+                    (self.project_id,),
+                ).fetchall()
+            finally:
+                conn.close()
+            table.setRowCount(len(rows))
+            for row_index, row in enumerate(rows):
+                date_item = QTableWidgetItem(format_date(row["holiday_date"]))
+                date_item.setData(Qt.UserRole, row["id"])
+                table.setItem(row_index, 0, date_item)
+                table.setItem(row_index, 1, QTableWidgetItem(row["title"] or ""))
+                table.setItem(row_index, 2, QTableWidgetItem(row["source"] or "MANUAL"))
+            table.resizeColumnsToContents()
+
+        def edit_holiday(existing=None):
+            initial = dict(existing or {})
+            fields = [
+                ("holiday_date", "تاریخ تعطیلی", "date", {}),
+                ("title", "شرح تعطیلی", "text", {}),
+            ]
+            record_dialog = RecordDialog(
+                "ثبت تعطیلی" if existing is None else "ویرایش تعطیلی",
+                fields, initial, dialog,
+            )
+            if record_dialog.exec() != QDialog.Accepted:
+                return
+            values = record_dialog.values()
+            if not values["holiday_date"] or not values["title"]:
+                QMessageBox.warning(dialog, "ورودی ناقص", "تاریخ و شرح تعطیلی الزامی است.")
+                return
+            try:
+                holiday_date = normalize_date(values["holiday_date"])
+                conn = connect()
+                try:
+                    if existing is None:
+                        conn.execute(
+                            "INSERT INTO calendar_holiday(project_id,holiday_date,title,source) "
+                            "VALUES(?,?,?,'MANUAL')",
+                            (self.project_id, holiday_date, values["title"]),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE calendar_holiday SET holiday_date=?, title=?, source='MANUAL' "
+                            "WHERE id=? AND project_id=?",
+                            (holiday_date, values["title"], existing["id"], self.project_id),
+                        )
+                    conn.commit()
+                finally:
+                    conn.close()
+            except (ValueError, sqlite3.Error) as error:
+                QMessageBox.warning(
+                    dialog, "ثبت تعطیلی ناموفق",
+                    "تاریخ نامعتبر است یا برای این روز تعطیلی دیگری ثبت شده است.\n" + str(error),
+                )
+                return
+            load_holidays()
+
+        def selected_holiday():
+            row_index = table.currentRow()
+            if row_index < 0:
+                return None
+            item = table.item(row_index, 0)
+            holiday_id = item.data(Qt.UserRole) if item is not None else None
+            if holiday_id is None:
+                return None
+            conn = connect()
+            try:
+                row = conn.execute(
+                    "SELECT id,holiday_date,title,source FROM calendar_holiday "
+                    "WHERE id=? AND project_id=?",
+                    (holiday_id, self.project_id),
+                ).fetchone()
+                return dict(row) if row is not None else None
+            finally:
+                conn.close()
+
+        def edit_selected():
+            record = selected_holiday()
+            if record is None:
+                QMessageBox.information(dialog, "انتخاب تعطیلی", "ابتدا یک تعطیلی را انتخاب کنید.")
+                return
+            edit_holiday(record)
+
+        def delete_selected():
+            record = selected_holiday()
+            if record is None:
+                QMessageBox.information(dialog, "انتخاب تعطیلی", "ابتدا یک تعطیلی را انتخاب کنید.")
+                return
+            answer = QMessageBox.question(dialog, "تأیید حذف", f"تعطیلی «{record['title']}» حذف شود؟")
+            if answer != QMessageBox.Yes:
+                return
+            conn = connect()
+            try:
+                conn.execute(
+                    "DELETE FROM calendar_holiday WHERE id=? AND project_id=?",
+                    (record["id"], self.project_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            load_holidays()
+
+        actions = QHBoxLayout()
+        add_button = QPushButton("ثبت تعطیلی")
+        add_button.clicked.connect(lambda: edit_holiday())
+        edit_button = QPushButton("ویرایش انتخاب‌شده")
+        edit_button.clicked.connect(edit_selected)
+        delete_button = QPushButton("حذف انتخاب‌شده")
+        delete_button.clicked.connect(delete_selected)
+        close_button = QPushButton("بستن")
+        close_button.clicked.connect(dialog.accept)
+        for button in (add_button, edit_button, delete_button, close_button):
+            actions.addWidget(button)
+        root.addLayout(actions)
+        load_holidays()
+        dialog.exec()
 
     def _populate_activity_filters(self, records):
         if not hasattr(self, "position_filter") or self._updating_filter_choices:
