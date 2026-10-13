@@ -53,6 +53,32 @@ def working_finish(start, duration_days, working_weekdays=(0, 1, 2, 3, 5, 6), ho
     return shift_working_days(start, duration - 1, working_weekdays, holidays)
 
 
+
+
+def _working_day_index(anchor, target, working_weekdays, holidays):
+    """Return the signed working-day offset of target from anchor."""
+    anchor = shift_working_days(anchor, 0, working_weekdays, holidays)
+    target = shift_working_days(target, 0, working_weekdays, holidays)
+    weekdays = set(working_weekdays)
+    holiday_dates = {_parse_date(item) for item in holidays}
+    holiday_dates.discard(None)
+    if target >= anchor:
+        current = anchor
+        offset = 0
+        while current < target:
+            current += timedelta(days=1)
+            if _is_working_day(current, weekdays, holiday_dates):
+                offset += 1
+        return offset
+    current = anchor
+    offset = 0
+    while current > target:
+        current -= timedelta(days=1)
+        if _is_working_day(current, weekdays, holiday_dates):
+            offset -= 1
+    return offset
+
+
 def analyze_critical_path(
     activities,
     dependencies,
@@ -136,7 +162,21 @@ def analyze_critical_path(
             "project_duration_workdays": None,
         }
 
-    earliest_start = {key: 0 for key in items}
+    anchor = _parse_date(project_start)
+    if anchor is None:
+        dated = [item["start_date"] for item in items.values() if item["start_date"]]
+        anchor = min(dated) if dated else None
+    holidays = tuple(holidays)
+    if anchor is not None:
+        anchor = shift_working_days(anchor, 0, working_weekdays, holidays)
+    earliest_start = {
+        key: (
+            _working_day_index(anchor, item["start_date"], working_weekdays, holidays)
+            if anchor is not None and item["start_date"] is not None
+            else 0
+        )
+        for key, item in items.items()
+    }
     for current in order:
         for edge in incoming[current]:
             earliest_start[current] = max(
@@ -157,11 +197,6 @@ def analyze_critical_path(
                 latest_start[current], latest_start[successor] - edge["offset"]
             )
 
-    anchor = _parse_date(project_start)
-    if anchor is None:
-        dated = [item["start_date"] for item in items.values() if item["start_date"]]
-        anchor = min(dated) if dated else None
-    holidays = tuple(holidays)
     results = []
     for key in order:
         duration = items[key]["duration_days"]
