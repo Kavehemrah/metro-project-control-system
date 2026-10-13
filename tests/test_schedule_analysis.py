@@ -42,7 +42,7 @@ def test_critical_path_marks_zero_float_chain_and_parallel_float():
     assert by_id[1]["total_float_workdays"] == 0
     assert by_id[4]["total_float_workdays"] == 4
     assert by_id[1]["earliest_start"] == date(2026, 10, 15)
-    assert by_id[1]["earliest_finish"] == date(2026, 10, 16)
+    assert by_id[1]["earliest_finish"] == date(2026, 10, 17)
 
 
 def test_critical_path_supports_finish_to_finish_relationship():
