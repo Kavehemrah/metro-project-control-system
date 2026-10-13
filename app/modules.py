@@ -351,6 +351,10 @@ class ActivityPage(RecordPage):
         self.holiday_button = QPushButton("مدیریت تعطیلات")
         self.holiday_button.clicked.connect(self.manage_holidays)
         self.layout().itemAt(2).layout().addWidget(self.holiday_button)
+        if not progress_only:
+            self.daily_plan_button = QPushButton("مدیریت برنامه روزانه")
+            self.daily_plan_button.clicked.connect(self.manage_daily_plan)
+            self.layout().itemAt(2).layout().addWidget(self.daily_plan_button)
         if progress_only:
             self.add_button.setText("ثبت عملکرد روزانه")
             self.edit_button.setText("ویرایش عملکرد روزانه")
@@ -452,6 +456,191 @@ class ActivityPage(RecordPage):
             "این تحلیل مستقل است و تاریخ‌های پیش‌بینی فعلی برنامه را تغییر نمی‌دهد.",
         ])
         QMessageBox.information(self, "تحلیل مسیر بحرانی", "\n".join(lines))
+
+    def manage_daily_plan(self):
+        activity = self._selected_record()
+        if activity is None:
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"برنامه روزانه: {activity['title'] or activity['id']}")
+        dialog.setLayoutDirection(Qt.RightToLeft)
+        dialog.resize(760, 480)
+        root = QVBoxLayout(dialog)
+        note = QLabel(
+            f"مقادیر را با واحد «{activity['unit'] or 'واحد فعالیت'}» وارد کنید. "
+            "برنامه واردشده از Excel قابل بازنویسی نیست؛ فقط می‌توانید برای تاریخ‌های خالی برنامه دستی اضافه کنید. "
+            "برای تغییر یا حذف، فقط ردیف‌های MANUAL قابل ویرایش هستند."
+        )
+        note.setWordWrap(True)
+        root.addWidget(note)
+
+        table = QTableWidget()
+        _configure_table(table, ["تاریخ برنامه", f"مقدار برنامه ({activity['unit'] or ''})", "منبع"])
+        root.addWidget(table)
+
+        def load_plan():
+            conn = connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT id,plan_date,quantity,source
+                    FROM activity_daily_plan
+                    WHERE activity_id=?
+                    ORDER BY plan_date
+                    """,
+                    (activity["id"],),
+                ).fetchall()
+            finally:
+                conn.close()
+            table.setRowCount(len(rows))
+            for row_index, row in enumerate(rows):
+                date_item = QTableWidgetItem(format_date(row["plan_date"]))
+                date_item.setData(Qt.UserRole, row["id"])
+                table.setItem(row_index, 0, date_item)
+                table.setItem(row_index, 1, QTableWidgetItem(f"{float(row['quantity'] or 0):,.2f}"))
+                table.setItem(row_index, 2, QTableWidgetItem(row["source"] or "EXCEL"))
+            table.resizeColumnsToContents()
+
+        def selected_plan():
+            row_index = table.currentRow()
+            if row_index < 0:
+                QMessageBox.information(dialog, "انتخاب برنامه", "ابتدا یک ردیف برنامه را انتخاب کنید.")
+                return None
+            cell = table.item(row_index, 0)
+            plan_id = cell.data(Qt.UserRole) if cell is not None else None
+            if plan_id is None:
+                return None
+            conn = connect()
+            try:
+                row = conn.execute(
+                    """
+                    SELECT id,plan_date,quantity,source
+                    FROM activity_daily_plan
+                    WHERE id=? AND activity_id=?
+                    """,
+                    (plan_id, activity["id"]),
+                ).fetchone()
+                return dict(row) if row is not None else None
+            finally:
+                conn.close()
+
+        def save_plan(existing=None):
+            if existing is not None and existing.get("source") != "MANUAL":
+                QMessageBox.warning(
+                    dialog, "برنامه مرجع Excel",
+                    "این ردیف از Excel وارد شده است و برای جلوگیری از تغییر داده مرجع قابل ویرایش نیست.",
+                )
+                return
+            fields = [
+                ("plan_date", "تاریخ برنامه", "date", {}),
+                ("quantity", f"مقدار برنامه ({activity['unit'] or ''})", "number", {"minimum": 0, "decimals": 2}),
+            ]
+            form = RecordDialog(
+                "افزودن برنامه روزانه" if existing is None else "ویرایش برنامه روزانه",
+                fields,
+                existing,
+                dialog,
+            )
+            if form.exec() != QDialog.Accepted:
+                return
+            values = form.values()
+            if not values["plan_date"] or values["quantity"] <= 0:
+                QMessageBox.warning(dialog, "ورودی ناقص", "تاریخ و مقدار برنامه باید وارد شوند و مقدار از صفر بیشتر باشد.")
+                return
+            try:
+                plan_date = normalize_date(values["plan_date"])
+            except ValueError as error:
+                QMessageBox.warning(dialog, "تاریخ نامعتبر", str(error))
+                return
+
+            conn = connect()
+            try:
+                if existing is None:
+                    duplicate = conn.execute(
+                        "SELECT source FROM activity_daily_plan WHERE activity_id=? AND plan_date=?",
+                        (activity["id"], plan_date),
+                    ).fetchone()
+                    if duplicate is not None:
+                        message = (
+                            "برای این تاریخ برنامه Excel وجود دارد؛ تاریخ دیگری انتخاب کنید."
+                            if duplicate["source"] != "MANUAL" else
+                            "برای این تاریخ برنامه دستی وجود دارد؛ آن را انتخاب و ویرایش کنید."
+                        )
+                        QMessageBox.warning(dialog, "تاریخ تکراری", message)
+                        return
+                    conn.execute(
+                        """
+                        INSERT INTO activity_daily_plan(activity_id,plan_date,quantity,source)
+                        VALUES(?,?,?,'MANUAL')
+                        """,
+                        (activity["id"], plan_date, values["quantity"]),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE activity_daily_plan SET plan_date=?,quantity=?
+                        WHERE id=? AND activity_id=? AND source='MANUAL'
+                        """,
+                        (plan_date, values["quantity"], existing["id"], activity["id"]),
+                    )
+                conn.commit()
+            except sqlite3.IntegrityError:
+                conn.rollback()
+                QMessageBox.warning(dialog, "تاریخ تکراری", "برای این فعالیت در این تاریخ برنامه‌ای ثبت شده است.")
+                return
+            finally:
+                conn.close()
+            load_plan()
+
+        def edit_selected():
+            existing = selected_plan()
+            if existing is not None:
+                save_plan(existing)
+
+        def delete_selected():
+            existing = selected_plan()
+            if existing is None:
+                return
+            if existing["source"] != "MANUAL":
+                QMessageBox.warning(
+                    dialog, "برنامه مرجع Excel",
+                    "ردیف Excel قابل حذف نیست. داده مرجع را از فایل منبع اصلاح کنید.",
+                )
+                return
+            answer = QMessageBox.question(
+                dialog, "تأیید حذف",
+                f"برنامه {format_date(existing['plan_date'])} حذف شود؟",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            conn = connect()
+            try:
+                conn.execute(
+                    "DELETE FROM activity_daily_plan WHERE id=? AND activity_id=? AND source='MANUAL'",
+                    (existing["id"], activity["id"]),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            load_plan()
+
+        actions = QHBoxLayout()
+        add_button = QPushButton("افزودن روز برنامه")
+        add_button.clicked.connect(lambda: save_plan())
+        edit_button = QPushButton("ویرایش ردیف دستی")
+        edit_button.clicked.connect(edit_selected)
+        delete_button = QPushButton("حذف ردیف دستی")
+        delete_button.clicked.connect(delete_selected)
+        close_button = QPushButton("بستن")
+        close_button.clicked.connect(dialog.accept)
+        for button in (add_button, edit_button, delete_button, close_button):
+            actions.addWidget(button)
+        root.addLayout(actions)
+        load_plan()
+        dialog.exec()
+        self.refresh(recalculate_schedule=False)
 
     def manage_holidays(self):
         dialog = QDialog(self)
