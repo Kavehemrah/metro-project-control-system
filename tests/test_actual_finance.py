@@ -230,10 +230,21 @@ def test_project_progress_summary_is_live_and_revenue_weighted(tmp_path):
     )
 
     result = project_progress_summary(conn, 1)
-    conn.close()
-
     assert result["progress_pct"] == 31.25
     assert result["basis_total"] == 4000
     assert result["activity_count"] == 3
     assert result["weighted_activity_count"] == 2
     assert round(result["coverage_pct"], 2) == 66.67
+
+    conn.execute(
+        "INSERT INTO activity_daily_actual(activity_id,actual_date,quantity,source) VALUES(?,?,?,'MANUAL')",
+        (first, "2026-10-11", 1),
+    )
+    conn.execute(
+        "INSERT INTO activity_daily_actual(activity_id,actual_date,quantity,source) VALUES(?,?,?,'MANUAL')",
+        (second, "2026-10-11", 5),
+    )
+    updated = project_progress_summary(conn, 1)
+    conn.close()
+
+    assert updated["progress_pct"] == 37.5
