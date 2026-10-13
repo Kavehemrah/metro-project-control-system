@@ -31,7 +31,7 @@ from .services.control import activity_control, update_activity_rollup
 from .services.dates import format_date, normalize_date
 from .services.forecast import calculate_schedule, forecast_finance
 from .services.schedule_analysis import analyze_critical_path
-from .services.actual_finance import finance_performance, record_actual
+from .services.actual_finance import activity_cost_coverage, finance_performance, record_actual
 from .services.activity_costs import (
     activity_cost_items,
     activity_resource_forecast,
@@ -1603,6 +1603,29 @@ class FinancePage(QWidget):
         self.coverage_summary.setWordWrap(True)
         self.coverage_summary.setStyleSheet(f"font-size:14px;color:{BLUE};")
         layout.addWidget(self.coverage_summary)
+
+        cost_coverage_title = QLabel("پوشش هزینه در سطح فعالیت")
+        cost_coverage_title.setStyleSheet(f"font-size:17px;font-weight:600;color:{TEXT};")
+        layout.addWidget(cost_coverage_title)
+        cost_coverage_note = QLabel(
+            "بودجه پایه از ریزهزینه واحدمحور یا بودجه هزینه تخصیص‌یافته می‌آید. "
+            "«هزینه واقعی ثبت‌شده» فقط جمع رکوردهای دفتر واقعی است و لزوماً کل هزینه مصرف‌شده پروژه نیست. "
+            "فعالیت فاقد بودجه پایه در برآورد هزینه فعالیتی نهایی نمی‌شود و باید تکمیل یا تعیین تکلیف شود."
+        )
+        cost_coverage_note.setWordWrap(True)
+        cost_coverage_note.setStyleSheet(f"color:{MUTED};")
+        layout.addWidget(cost_coverage_note)
+        self.cost_coverage_table = QTableWidget()
+        _configure_table(
+            self.cost_coverage_table,
+            [
+                "فعالیت", "وضعیت بودجه", "بودجه پایه (ریال)", "پیشرفت",
+                "ارزش کسب‌شده هزینه (ریال)", "هزینه واقعی ثبت‌شده (ریال)",
+                "هزینه پیش‌بینی‌نشده (ریال)", "برآورد قابل ارزیابی (ریال)",
+            ],
+        )
+        layout.addWidget(self.cost_coverage_table)
+
         actual_title = QLabel("دفتر درآمد و هزینه واقعی")
         actual_title.setStyleSheet(f"font-size:17px;font-weight:600;color:{TEXT};")
         layout.addWidget(actual_title)
@@ -1671,6 +1694,7 @@ class FinancePage(QWidget):
             ).fetchone()
             forecast = forecast_finance(conn, 1)
             performance = finance_performance(conn, 1)
+            cost_coverage = activity_cost_coverage(conn, 1)
             actual_entries = conn.execute(
                 """
                 SELECT e.*, a.row_no, a.title AS activity_title
@@ -1691,6 +1715,37 @@ class FinancePage(QWidget):
                     allocation_rows.append((table_name, label, entry))
         finally:
             conn.close()
+
+        self.cost_coverage_table.setRowCount(len(cost_coverage))
+        for row_index, coverage_row in enumerate(cost_coverage):
+            prefix = f"{coverage_row['row_no']} - " if coverage_row["row_no"] is not None else ""
+            location = " / ".join(
+                str(part) for part in (coverage_row["position"], coverage_row["zone"], coverage_row["title"])
+                if part
+            )
+            activity_label = prefix + (location or f"فعالیت {coverage_row['activity_id']}")
+            status = coverage_row["budget_source"]
+            if coverage_row["zero_cost_item_count"]:
+                status += f" | {coverage_row['zero_cost_item_count']} ردیف ریزهزینه ناقص"
+            assessed_eac = (
+                f"{coverage_row['eac_assessed']:,.0f}"
+                if coverage_row["eac_assessed"] is not None else "قابل ارزیابی نیست"
+            )
+            values = [
+                activity_label,
+                status,
+                f"{coverage_row['base_cost_budget']:,.0f}",
+                f"{coverage_row['progress_pct']:.1f}٪",
+                f"{coverage_row['earned_value_cost']:,.0f}",
+                f"{coverage_row['recorded_actual_cost']:,.0f}",
+                f"{coverage_row['unplanned_cost']:,.0f}",
+                assessed_eac,
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.cost_coverage_table.setItem(row_index, column, item)
+        self.cost_coverage_table.resizeColumnsToContents()
 
         self.actual_table.setRowCount(len(actual_entries))
         for row_index, entry in enumerate(actual_entries):
