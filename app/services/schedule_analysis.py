@@ -81,7 +81,7 @@ def _working_day_index(anchor, target, working_weekdays, holidays):
 
 def analyze_critical_path(
     activities,
-    dependencies,
+    dependencies=(),
     project_start=None,
     working_weekdays=(0, 1, 2, 3, 5, 6),
     holidays=(),
