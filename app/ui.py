@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
 )
 from .db import connect
-from .services.control import aggregate_activity_control, critical_activities
+from .services.control import critical_activities, project_progress_summary
 from .theme import ACCENT, BG as THEME_BG, MUTED as THEME_MUTED, NAV, TEXT as THEME_TEXT, font_family
 
 NAVY = NAV
@@ -160,10 +160,28 @@ class Dashboard(QWidget):
         discrepancies = conn.execute(
             "SELECT * FROM discrepancy WHERE project_id=1"
         ).fetchall()
-        controls = aggregate_activity_control(conn, 1)
+        live_progress = project_progress_summary(conn, 1)
+        actual_finance = conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN entry_type='REVENUE' THEN amount ELSE 0 END), 0) AS revenue,
+                COALESCE(SUM(CASE WHEN entry_type='COST' THEN amount ELSE 0 END), 0) AS cost,
+                COUNT(*) AS entry_count
+            FROM actual_finance_entry
+            WHERE project_id=1 AND source='MANUAL'
+            """
+        ).fetchone()
         conn.close()
 
-        physical_actual = kpi["physical_progress"] if kpi else 0
+        reference_progress = float(kpi["physical_progress"] or 0) if kpi else 0.0
+        physical_actual = (
+            live_progress["progress_pct"] / 100.0
+            if live_progress["progress_pct"] is not None
+            else reference_progress
+        )
+        actual_revenue = float(actual_finance["revenue"] or 0)
+        actual_cost = float(actual_finance["cost"] or 0)
+        actual_net = actual_revenue - actual_cost
 
         root.setContentsMargins(22, 20, 22, 24)
         root.setSpacing(16)
@@ -184,9 +202,9 @@ class Dashboard(QWidget):
         cards.setSpacing(12)
         cards.addWidget(
             card(
-                "پیشرفت فیزیکی",
+                "پیشرفت وزنی فعالیت‌ها",
                 f"{physical_actual * 100:.2f}%",
-                "برنامه دوماهه",
+                f"پوشش {live_progress['weighted_activity_count']}/{live_progress['activity_count']} فعالیت؛ مرجع Excel {reference_progress * 100:.2f}%",
                 BLUE,
             )
         )
@@ -202,7 +220,7 @@ class Dashboard(QWidget):
             card(
                 "هزینه دو ماهه",
                 money(kpi["cost"]),
-                "مبنای خلاصه",
+                "مبنای خلاصه Excel",
                 RED,
             )
         )
@@ -216,12 +234,40 @@ class Dashboard(QWidget):
         )
         root.addLayout(cards)
 
+        actual_cards = QHBoxLayout()
+        actual_cards.setSpacing(12)
+        actual_cards.addWidget(
+            card(
+                "درآمد ثبت‌شده دستی",
+                money(actual_revenue),
+                "دفتر مالی دستی؛ ممکن است کامل نباشد",
+                GREEN,
+            )
+        )
+        actual_cards.addWidget(
+            card(
+                "هزینه ثبت‌شده دستی",
+                money(actual_cost),
+                "فقط رکوردهای ثبت‌شده؛ نه کل هزینه قطعی",
+                RED,
+            )
+        )
+        actual_cards.addWidget(
+            card(
+                "خالص ثبت‌شده دستی",
+                money(actual_net),
+                f"{actual_finance['entry_count']} رکورد مالی دستی",
+                BLUE,
+            )
+        )
+        root.addLayout(actual_cards)
+
         charts = QHBoxLayout()
         charts.addWidget(
             MiniChart(
-                [physical_actual * 100],
-                ["دوره"],
-                "پیشرفت فیزیکی ثبت‌شده از اکسل",
+                [reference_progress * 100, physical_actual * 100],
+                ["Excel", "زنده"],
+                "مقایسه پیشرفت مرجع و فعالیت‌ها (%)",
             )
         )
         charts.addWidget(
