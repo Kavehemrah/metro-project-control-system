@@ -16,6 +16,87 @@ from app.services.control import activity_control
 from app.services.dates import normalize_date
 
 
+def activity_cost_coverage(conn: sqlite3.Connection, project_id: int = 1) -> list[dict]:
+    """Return activity-level cost budget coverage without assuming actual costs are complete.
+
+    Unit-cost build-ups take precedence over legacy activity-linked cost budgets,
+    matching finance_performance(). Actual cost is explicitly the amount recorded
+    in the manual ledger, not a claim of comprehensive expenditure.
+    """
+    unit_cost_budgets = activity_cost_budgets(conn, project_id)
+    rows = conn.execute(
+        """
+        SELECT a.id, a.row_no, a.position, a.zone, a.title, a.unit,
+               COALESCE((
+                   SELECT SUM(c.amount) FROM cost_entry c
+                   WHERE c.project_id=a.project_id AND c.activity_id=a.id
+                     AND c.source IN ('EXCEL','MANUAL')
+               ),0) AS legacy_cost_budget,
+               COALESCE((
+                   SELECT SUM(x.amount) FROM actual_finance_entry x
+                   WHERE x.project_id=a.project_id AND x.activity_id=a.id
+                     AND x.entry_type='COST' AND x.source='MANUAL'
+               ),0) AS recorded_actual_cost,
+               COALESCE((
+                   SELECT SUM(x.amount) FROM actual_finance_entry x
+                   WHERE x.project_id=a.project_id AND x.activity_id=a.id
+                     AND x.entry_type='COST' AND x.source='MANUAL'
+                     AND x.is_unplanned=1
+               ),0) AS unplanned_cost,
+               COALESCE((
+                   SELECT COUNT(*) FROM activity_cost_item ci
+                   WHERE ci.project_id=a.project_id AND ci.activity_id=a.id
+                     AND (ci.quantity_per_activity_unit<=0 OR ci.unit_price<=0)
+               ),0) AS zero_cost_item_count
+        FROM activity a
+        WHERE a.project_id=?
+        ORDER BY a.row_no, a.id
+        """,
+        (project_id,),
+    ).fetchall()
+
+    result = []
+    for row in rows:
+        activity_id = int(row["id"])
+        legacy_budget = max(0.0, float(row["legacy_cost_budget"] or 0))
+        if activity_id in unit_cost_budgets:
+            budget = unit_cost_budgets[activity_id]
+            budget_source = "ریزهزینه واحدمحور"
+        elif legacy_budget > 0:
+            budget = legacy_budget
+            budget_source = "بودجه هزینه تخصیص‌یافته"
+        else:
+            budget = 0.0
+            budget_source = "فاقد بودجه پایه"
+
+        control = activity_control(conn, activity_id)
+        progress_pct = min(
+            100.0,
+            max(0.0, float(control["physical_progress_pct"] or 0)),
+        )
+        earned_value = budget * progress_pct / 100.0
+        recorded_actual = max(0.0, float(row["recorded_actual_cost"] or 0))
+        unplanned_cost = max(0.0, float(row["unplanned_cost"] or 0))
+        result.append({
+            "activity_id": activity_id,
+            "row_no": row["row_no"],
+            "position": row["position"],
+            "zone": row["zone"],
+            "title": row["title"],
+            "unit": row["unit"],
+            "budget_source": budget_source,
+            "base_cost_budget": budget,
+            "progress_pct": progress_pct,
+            "earned_value_cost": earned_value,
+            "recorded_actual_cost": recorded_actual,
+            "unplanned_cost": unplanned_cost,
+            "eac_assessed": budget + unplanned_cost if budget > 0 else None,
+            "zero_cost_item_count": int(row["zero_cost_item_count"] or 0),
+            "has_budget": budget > 0,
+        })
+    return result
+
+
 def finance_performance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
     actual = conn.execute(
         """
