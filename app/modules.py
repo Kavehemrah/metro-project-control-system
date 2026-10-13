@@ -298,7 +298,7 @@ ACTIVITY_FIELDS = [
     ("position", "موقعیت", "text", {}),
     ("zone", "جبهه کاری", "text", {}),
     ("title", "شرح فعالیت", "text", {}),
-    ("quantity", "حجم کل", "number", {"minimum": 0.01, "decimals": 2}),
+    ("quantity", "حجم کل", "number", {"minimum": 0, "decimals": 2}),
     ("unit", "واحد", "text", {}),
     ("start_date", "شروع", "date", {}),
     ("finish_date", "پایان", "date", {}),
