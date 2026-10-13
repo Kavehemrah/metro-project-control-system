@@ -636,7 +636,7 @@ class ActivityPage(RecordPage):
         finish = values.get("finish_date")
         if start and finish and finish < start:
             raise ValueError("تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد.")
-        if start and finish and int(values.get("duration_days") or 0) <= 0:
+        if start and finish:
             values["duration_days"] = max(
                 1, (date.fromisoformat(finish) - date.fromisoformat(start)).days + 1
             )
