@@ -208,8 +208,8 @@ def analyze_critical_path(
             "earliest_finish_workday": ef,
             "latest_start_workday": ls,
             "latest_finish_workday": ls + duration - 1,
-            "total_float_workdays": max(0, ls - es),
-            "critical": ls == es,
+            "total_float_workdays": ls - es,
+            "critical": ls <= es,
         }
         if anchor is not None:
             result["earliest_start"] = shift_working_days(anchor, es, working_weekdays, holidays)
