@@ -1,5 +1,6 @@
 from app.db import connect
 from app.services.actual_finance import activity_cost_coverage, finance_performance, record_actual
+from app.services.control import project_progress_summary
 
 
 def _activity(conn, title, quantity=10, actual_qty=5):
@@ -208,3 +209,31 @@ def test_activity_cost_coverage_shows_budget_source_earned_value_and_unbudgeted_
     assert rows[unbudgeted]["recorded_actual_cost"] == 50
     assert rows[unbudgeted]["unplanned_cost"] == 50
     assert rows[unbudgeted]["eac_assessed"] is None
+
+
+
+def test_project_progress_summary_is_live_and_revenue_weighted(tmp_path):
+    conn = connect(tmp_path / "weighted-progress.db")
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Progress test')")
+    first = _activity(conn, "Half complete", 10, 5)
+    second = _activity(conn, "Quarter complete", 100, 25)
+    _activity(conn, "No revenue basis", 50, 10)
+    conn.execute(
+        "INSERT INTO revenue_entry(project_id,activity_id,period,category,amount,source) "
+        "VALUES(1,?,'کل پروژه','درآمد فعالیت',1000,'EXCEL_ACTIVITY')",
+        (first,),
+    )
+    conn.execute(
+        "INSERT INTO revenue_entry(project_id,activity_id,period,category,amount,source) "
+        "VALUES(1,?,'کل پروژه','درآمد فعالیت',3000,'EXCEL_ACTIVITY')",
+        (second,),
+    )
+
+    result = project_progress_summary(conn, 1)
+    conn.close()
+
+    assert result["progress_pct"] == 31.25
+    assert result["basis_total"] == 4000
+    assert result["activity_count"] == 3
+    assert result["weighted_activity_count"] == 2
+    assert round(result["coverage_pct"], 2) == 66.67
