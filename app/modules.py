@@ -1,6 +1,7 @@
 import csv
 import sqlite3
 from datetime import date
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -27,7 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .db import connect
+from .db import DB_PATH, connect
 from .services.control import activity_control, update_activity_rollup
 from .services.dates import format_date, normalize_date
 from .services.forecast import calculate_schedule, forecast_finance
@@ -2332,10 +2333,47 @@ class SettingsPage(QWidget):
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{MUTED};")
         layout.addWidget(note)
+        backup_button = QPushButton("تهیه نسخه پشتیبان از دیتابیس")
+        backup_button.clicked.connect(self.backup_database)
+        layout.addWidget(backup_button)
+        backup_note = QLabel(
+            "قبل از ورود دوباره Excel یا تست عملی، از اطلاعات فعلی نسخه پشتیبان بگیرید. "
+            "این فایل شامل رکوردهای دستی و مرجع Excel فعلی است."
+        )
+        backup_note.setWordWrap(True)
+        backup_note.setStyleSheet(f"color:{MUTED};")
+        layout.addWidget(backup_note)
         button = QPushButton("انتخاب و ورود فایل Excel")
         button.clicked.connect(self.import_excel)
         layout.addWidget(button)
         layout.addStretch()
+
+    def backup_database(self):
+        source = Path(DB_PATH)
+        if not source.exists():
+            QMessageBox.warning(self, "نسخه پشتیبان", "فایل دیتابیس هنوز ایجاد نشده است.")
+            return
+        destination, _filter = QFileDialog.getSaveFileName(
+            self,
+            "ذخیره نسخه پشتیبان دیتابیس",
+            str(Path.home() / "metro-project-control-backup.db"),
+            "SQLite database (*.db)",
+        )
+        if not destination:
+            return
+        target = Path(destination)
+        if target.resolve() == source.resolve():
+            QMessageBox.warning(self, "مسیر نامعتبر", "مسیر نسخه پشتیبان نباید با فایل دیتابیس اصلی یکسان باشد.")
+            return
+        if target.suffix.lower() != ".db":
+            target = target.with_suffix(".db")
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        except OSError as error:
+            QMessageBox.critical(self, "خطای نسخه پشتیبان", str(error))
+            return
+        QMessageBox.information(self, "نسخه پشتیبان", f"نسخه پشتیبان ذخیره شد:\n{target}")
 
     def import_excel(self):
         path, _filter = QFileDialog.getOpenFileName(
