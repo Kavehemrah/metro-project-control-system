@@ -1,5 +1,6 @@
 import csv
 import sqlite3
+from datetime import date
 import zipfile
 from pathlib import Path
 
@@ -297,8 +298,7 @@ ACTIVITY_FIELDS = [
     ("position", "موقعیت", "text", {}),
     ("zone", "جبهه کاری", "text", {}),
     ("title", "شرح فعالیت", "text", {}),
-    ("quantity", "حجم کل", "number", {"minimum": 0, "decimals": 2}),
-    ("remaining_qty", "حجم باقی‌مانده", "number", {"minimum": 0, "decimals": 2}),
+    ("quantity", "حجم کل", "number", {"minimum": 0.01, "decimals": 2}),
     ("unit", "واحد", "text", {}),
     ("start_date", "شروع", "date", {}),
     ("finish_date", "پایان", "date", {}),
@@ -324,24 +324,17 @@ class ActivityPage(RecordPage):
         columns = [
             ("row_no", "ردیف", None),
             ("position", "موقعیت", None),
-            ("zone", "جبهه", None),
-            ("title", "فعالیت", None),
-            ("quantity", "حجم کل", lambda v, _r: f"{v or 0:,.2f}"),
-            ("plan_remaining_qty", "مانده برنامه", lambda v, _r: f"{v or 0:,.2f}"),
-            ("remaining_qty", "باقی‌مانده", lambda v, _r: f"{v or 0:,.2f}"),
+            ("zone", "جبهه کاری", None),
+            ("title", "شرح فعالیت", None),
             ("unit", "واحد", None),
-            ("start_date", "شروع", None),
-            ("finish_date", "پایان برنامه", None),
-            ("forecast_finish", "پایان پیش‌بینی", None),
-            ("daily_target", "برنامه روزانه", lambda v, _r: f"{v or 0:,.2f}"),
+            ("quantity", "حجم کل", lambda v, _r: f"{v or 0:,.2f}"),
             ("planned_qty", "برنامه دوره", lambda v, _r: f"{v or 0:,.2f}"),
             ("actual_qty", "عملکرد دوره", lambda v, _r: f"{v or 0:,.2f}"),
             ("cumulative_actual_qty", "عملکرد تجمعی", lambda v, _r: f"{v or 0:,.2f}"),
-            ("variance_qty", "انحراف", lambda v, _r: f"{v or 0:,.2f}"),
-            ("achievement_pct", "تحقق", lambda v, _r: f"{v or 0:.1f}%"),
+            ("remaining_qty", "مانده واقعی", lambda v, _r: f"{v or 0:,.2f}"),
             ("progress", "پیشرفت", lambda v, _r: f"{(v or 0) * 100:.1f}%"),
+            ("forecast_finish", "پایان پیش‌بینی", None),
             ("delay_days", "تأخیر", lambda v, _r: f"{v or 0} روز"),
-            ("status", "وضعیت", None),
         ]
         super().__init__(
             title,
@@ -365,10 +358,26 @@ class ActivityPage(RecordPage):
         self.layout().itemAt(2).layout().addWidget(self.holiday_button)
         if progress_only:
             self.add_button.setText("ثبت عملکرد روزانه")
-            self.edit_button.setText("ثبت عملکرد")
-            self.delete_button.setText("حذف عملکرد")
+            self.edit_button.setText("ویرایش عملکرد روزانه")
+            self.delete_button.setText("حذف عملکرد روزانه")
         else:
             self.add_button.setText("افزودن فعالیت")
+            self.edit_button.setText("ویرایش فعالیت")
+            self.delete_button.setText("حذف فعالیت")
+
+        self.workflow_notice = QLabel(
+            "ثبت عملکرد: یک فعالیت را از جدول انتخاب کن، «ثبت عملکرد روزانه» را بزن و تاریخ و مقدار همان روز را وارد کن. "
+            "برای هر فعالیت در هر تاریخ فقط یک رکورد مجاز است؛ برای اصلاح از «ویرایش عملکرد روزانه» استفاده کن. "
+            "مقادیر Excel حفظ می‌شوند و با عملکرد دستی جمع می‌شوند."
+            if progress_only else
+            "مسیر کار: فعالیت و حجم کل را تعریف کن؛ تاریخ‌ها و پیش‌نیازها را کنترل کن؛ سپس عملکرد واقعی را در بخش «پیشرفت فیزیکی» ثبت کن. "
+            "مانده و درصد پیشرفت از داده‌های عملکرد محاسبه می‌شوند و نباید دستی وارد شوند."
+        )
+        self.workflow_notice.setWordWrap(True)
+        self.workflow_notice.setStyleSheet(
+            "background:#EEF4F8;color:#29445A;border:1px solid #D5E2EA;border-radius:6px;padding:8px 10px;"
+        )
+        self.layout().insertWidget(3, self.workflow_notice)
 
         filter_layout = QHBoxLayout()
         filter_layout.addWidget(QLabel("فیلتر موقعیت:"))
@@ -384,9 +393,15 @@ class ActivityPage(RecordPage):
         self.search_filter.setPlaceholderText("جستجوی متن در موقعیت، جبهه یا شرح فعالیت")
         filter_layout.addWidget(self.search_filter, 1)
         self.layout().insertLayout(3, filter_layout)
-        self.position_filter.currentIndexChanged.connect(self.refresh)
-        self.activity_filter.currentIndexChanged.connect(self.refresh)
-        self.search_filter.textChanged.connect(self.refresh)
+        self.position_filter.currentIndexChanged.connect(
+            lambda _index: self.refresh(recalculate_schedule=False)
+        )
+        self.activity_filter.currentIndexChanged.connect(
+            lambda _index: self.refresh(recalculate_schedule=False)
+        )
+        self.search_filter.textChanged.connect(
+            lambda _text: self.refresh(recalculate_schedule=False)
+        )
         self._updating_filter_choices = False
         self.refresh()
 
@@ -620,15 +635,27 @@ class ActivityPage(RecordPage):
     def prepare_values(self, values):
         for key in ("start_date", "finish_date"):
             values[key] = normalize_date(values[key]) if values.get(key) else None
+        if float(values.get("quantity") or 0) <= 0:
+            raise ValueError("حجم کل فعالیت باید بزرگ‌تر از صفر باشد.")
+        start = values.get("start_date")
+        finish = values.get("finish_date")
+        if start and finish and finish < start:
+            raise ValueError("تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد.")
+        if start and finish and int(values.get("duration_days") or 0) <= 0:
+            values["duration_days"] = max(
+                1, (date.fromisoformat(finish) - date.fromisoformat(start)).days + 1
+            )
         values["source"] = "MANUAL"
         return values
 
-    def refresh(self):
+    def refresh(self, recalculate_schedule=True):
         conn = connect()
         try:
-            schedule = calculate_schedule(conn, self.project_id, persist=True)
-            if not schedule["cycle"]:
-                conn.commit()
+            schedule = None
+            if recalculate_schedule:
+                schedule = calculate_schedule(conn, self.project_id, persist=True)
+                if not schedule["cycle"]:
+                    conn.commit()
             base_records = conn.execute(
                 self.query,
                 (self.project_id, *self.query_params),
@@ -652,7 +679,7 @@ class ActivityPage(RecordPage):
                 ]
             else:
                 self.records = base_records
-            if hasattr(self, "schedule_notice"):
+            if hasattr(self, "schedule_notice") and schedule is not None:
                 if schedule["cycle"]:
                     self.schedule_notice.setText("خطا: وابستگی فعالیت‌ها چرخه دارد؛ تاریخ‌های پیش‌بینی به‌روزرسانی نشدند. فعالیت‌ها: " + "، ".join(schedule.get("cycle_titles", [])))
                 else:
@@ -667,22 +694,15 @@ class ActivityPage(RecordPage):
                     record["position"],
                     record["zone"],
                     record["title"],
-                    f"{record['quantity'] or 0:,.2f}",
-                    f"{record['plan_remaining_qty'] or 0:,.2f}",
-                    f"{record['remaining_qty'] or 0:,.2f}",
                     record["unit"],
-                    format_date(record["start_date"]),
-                    format_date(record["finish_date"]),
-                    format_date(record["forecast_finish"]),
-                    f"{record['daily_target'] or 0:,.2f}",
+                    f"{record['quantity'] or 0:,.2f}",
                     f"{control['planned_qty']:,.2f}",
                     f"{control['period_actual_qty']:,.2f}",
                     f"{control['cumulative_actual_qty']:,.2f}",
-                    f"{control['variance_qty']:,.2f}",
-                    f"{control['achievement_pct']:.1f}%",
+                    f"{control['remaining_qty']:,.2f}",
                     f"{control['physical_progress_pct']:.1f}%",
+                    format_date(record["forecast_finish"]),
                     f"{record['delay_days'] or 0} روز",
-                    record["status"],
                 ]
                 for column_index, value in enumerate(display_values):
                     item = QTableWidgetItem(str(value if value is not None else ""))
@@ -910,25 +930,30 @@ class ActivityPage(RecordPage):
                     ),
                 )
             else:
-                cursor = conn.execute(
+                existing_for_date = conn.execute(
+                    """
+                    SELECT id, source FROM activity_daily_actual
+                    WHERE activity_id=? AND actual_date=?
+                    """,
+                    (record["id"], actual_date),
+                ).fetchone()
+                if existing_for_date is not None:
+                    conn.rollback()
+                    title = "عملکرد دستی تکراری" if existing_for_date["source"] == "MANUAL" else "تاریخ متعلق به Excel"
+                    message = (
+                        "برای این فعالیت و تاریخ قبلاً عملکرد دستی ثبت شده است. برای اصلاح، رکورد را انتخاب و «ویرایش عملکرد روزانه» را بزن."
+                        if existing_for_date["source"] == "MANUAL" else
+                        "برای این تاریخ رکورد واردشده از Excel وجود دارد؛ برای جلوگیری از بازنویسی داده منبع، عملکرد دستی ثبت نشد."
+                    )
+                    QMessageBox.warning(self, title, message)
+                    return
+                conn.execute(
                     """
                     INSERT INTO activity_daily_actual(activity_id, actual_date, quantity, source, notes)
                     VALUES(?, ?, ?, 'MANUAL', ?)
-                    ON CONFLICT(activity_id, actual_date) DO UPDATE SET
-                        quantity=excluded.quantity,
-                        notes=excluded.notes
-                    WHERE activity_daily_actual.source='MANUAL'
                     """,
                     (record["id"], actual_date, values["quantity"], values["notes"]),
                 )
-                if cursor.rowcount == 0:
-                    conn.rollback()
-                    QMessageBox.warning(
-                        self,
-                        "تاریخ متعلق به Excel",
-                        "برای این تاریخ رکورد واردشده از Excel وجود دارد؛ برای جلوگیری از بازنویسی داده منبع، عملکرد دستی ثبت نشد.",
-                    )
-                    return
             update_activity_rollup(conn, record["id"])
             conn.commit()
         except sqlite3.IntegrityError:
@@ -949,7 +974,11 @@ class ActivityPage(RecordPage):
             if record:
                 self._record_actual(record)
             return
-        super().add_record()
+        values = self._dialog("افزودن فعالیت")
+        if values is not None:
+            values["remaining_qty"] = values["quantity"]
+            values["plan_remaining_qty"] = values["quantity"]
+            self._save_values(values)
 
     def edit_record(self):
         if self.progress_only:
