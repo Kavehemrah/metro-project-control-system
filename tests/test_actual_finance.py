@@ -1,5 +1,5 @@
 from app.db import connect
-from app.services.actual_finance import finance_performance, record_actual
+from app.services.actual_finance import activity_cost_coverage, finance_performance, record_actual
 
 
 def _activity(conn, title, quantity=10, actual_qty=5):
@@ -145,3 +145,66 @@ def test_contract_revenue_coverage_excludes_excel_summary_reference_from_activit
     assert result["revenue_coverage_pct"] == 40
     assert result["revenue_contract_difference"] == 6000
     assert result["zero_cost_item_count"] == 1
+
+
+
+def test_activity_cost_coverage_shows_budget_source_earned_value_and_unbudgeted_exceptions(tmp_path):
+    conn = connect(tmp_path / "activity-cost-coverage.db")
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Coverage test')")
+    unit_budgeted = _activity(conn, "Unit budget", 10, 5)
+    legacy_budgeted = _activity(conn, "Legacy budget", 10, 0)
+    unbudgeted = _activity(conn, "No budget", 10, 0)
+
+    conn.execute(
+        """
+        INSERT INTO activity_cost_item(
+            project_id,activity_id,category,item_name,unit,
+            quantity_per_activity_unit,unit_price,source
+        ) VALUES(1,?,'مصالح','بتن','مترمکعب',2,100,'MANUAL')
+        """,
+        (unit_budgeted,),
+    )
+    conn.execute(
+        """
+        INSERT INTO cost_entry(project_id,activity_id,period,category,amount,source)
+        VALUES(1,?,'مهر 1405','بودجه قدیمی',3000,'MANUAL')
+        """,
+        (legacy_budgeted,),
+    )
+    record_actual(
+        conn, project_id=1, entry_date="2026-10-02", period="مهر 1405",
+        entry_type="COST", category="هزینه ثبت‌شده", amount=100,
+        activity_id=unit_budgeted,
+    )
+    record_actual(
+        conn, project_id=1, entry_date="2026-10-03", period="مهر 1405",
+        entry_type="COST", category="هزینه اضافی", amount=20,
+        activity_id=unit_budgeted, is_unplanned=True,
+    )
+    record_actual(
+        conn, project_id=1, entry_date="2026-10-04", period="مهر 1405",
+        entry_type="COST", category="هزینه بدون بودجه", amount=50,
+        activity_id=unbudgeted, is_unplanned=True,
+    )
+    conn.commit()
+
+    rows = {row["activity_id"]: row for row in activity_cost_coverage(conn, 1)}
+    conn.close()
+
+    assert rows[unit_budgeted]["budget_source"] == "ریزهزینه واحدمحور"
+    assert rows[unit_budgeted]["base_cost_budget"] == 2000
+    assert rows[unit_budgeted]["progress_pct"] == 50
+    assert rows[unit_budgeted]["earned_value_cost"] == 1000
+    assert rows[unit_budgeted]["recorded_actual_cost"] == 120
+    assert rows[unit_budgeted]["unplanned_cost"] == 20
+    assert rows[unit_budgeted]["eac_assessed"] == 2020
+
+    assert rows[legacy_budgeted]["budget_source"] == "بودجه هزینه تخصیص‌یافته"
+    assert rows[legacy_budgeted]["base_cost_budget"] == 3000
+    assert rows[legacy_budgeted]["eac_assessed"] == 3000
+
+    assert rows[unbudgeted]["budget_source"] == "فاقد بودجه پایه"
+    assert rows[unbudgeted]["has_budget"] is False
+    assert rows[unbudgeted]["recorded_actual_cost"] == 50
+    assert rows[unbudgeted]["unplanned_cost"] == 50
+    assert rows[unbudgeted]["eac_assessed"] is None
