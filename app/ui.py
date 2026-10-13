@@ -212,7 +212,7 @@ class Dashboard(QWidget):
             card(
                 "درآمد دو ماهه",
                 money(kpi["revenue"]),
-                "کارکرد + تعدیل + سایر",
+                "مرجع خلاصه Excel؛ کارکرد + تعدیل + سایر",
                 GREEN,
             )
         )
@@ -228,7 +228,7 @@ class Dashboard(QWidget):
             card(
                 "بالانس مالی",
                 money(kpi["balance"]),
-                "درآمد منهای هزینه",
+                "محاسبه از خلاصه Excel",
                 BLUE,
             )
         )
