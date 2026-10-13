@@ -78,3 +78,23 @@ def test_critical_path_respects_later_baseline_start_dates():
     assert by_id[2]["earliest_start"] == date(2026, 10, 20)
     assert result["project_duration_workdays"] == 5
 
+
+def test_critical_path_skips_registered_holidays():
+    result = analyze_critical_path(
+        [{"id": 1, "title": "Pour", "duration_days": 3, "start_date": "2026-10-15"}],
+        holidays=("2026-10-17",),
+    )
+    activity = result["activities"][0]
+    assert activity["earliest_start"] == date(2026, 10, 15)
+    assert activity["earliest_finish"] == date(2026, 10, 19)
+    assert result["project_duration_workdays"] == 3
+
+
+def test_critical_path_holiday_can_extend_activity_start_and_finish():
+    result = analyze_critical_path(
+        [{"id": 1, "title": "Work", "duration_days": 2, "start_date": "2026-10-17"}],
+        holidays=("2026-10-17",),
+    )
+    activity = result["activities"][0]
+    assert activity["earliest_start"] == date(2026, 10, 18)
+    assert activity["earliest_finish"] == date(2026, 10, 19)
