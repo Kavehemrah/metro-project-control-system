@@ -303,14 +303,7 @@ ACTIVITY_FIELDS = [
     ("start_date", "شروع", "date", {}),
     ("finish_date", "پایان", "date", {}),
     ("duration_days", "مدت (روز)", "integer", {"minimum": 0, "maximum": 36500}),
-    ("daily_target", "برنامه روزانه", "number", {"minimum": 0, "decimals": 2}),
-    ("delay_days", "تأخیر (روز)", "integer", {"minimum": 0, "maximum": 36500}),
-    (
-        "status",
-        "وضعیت",
-        "choice",
-        {"choices": ["NORMAL", "WARNING", "CRITICAL"], "default": "NORMAL"},
-    ),
+    ("daily_target", "هدف تولید روزانه", "number", {"minimum": 0, "decimals": 2}),
 ]
 
 
@@ -328,7 +321,9 @@ class ActivityPage(RecordPage):
             ("title", "شرح فعالیت", None),
             ("unit", "واحد", None),
             ("quantity", "حجم کل", lambda v, _r: f"{v or 0:,.2f}"),
-            ("planned_qty", "برنامه دوره", lambda v, _r: f"{v or 0:,.2f}"),
+            ("start_date", "شروع برنامه", None),
+            ("finish_date", "پایان برنامه", None),
+            ("planned_qty", "برنامه کل بازه", lambda v, _r: f"{v or 0:,.2f}"),
             ("actual_qty", "عملکرد دوره", lambda v, _r: f"{v or 0:,.2f}"),
             ("cumulative_actual_qty", "عملکرد تجمعی", lambda v, _r: f"{v or 0:,.2f}"),
             ("remaining_qty", "مانده واقعی", lambda v, _r: f"{v or 0:,.2f}"),
@@ -696,6 +691,8 @@ class ActivityPage(RecordPage):
                     record["title"],
                     record["unit"],
                     f"{record['quantity'] or 0:,.2f}",
+                    format_date(record["start_date"]),
+                    format_date(record["finish_date"]),
                     f"{control['planned_qty']:,.2f}",
                     f"{control['period_actual_qty']:,.2f}",
                     f"{control['cumulative_actual_qty']:,.2f}",
