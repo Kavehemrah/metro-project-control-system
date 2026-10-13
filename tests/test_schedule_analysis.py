@@ -65,3 +65,16 @@ def test_critical_path_detects_cycles():
     )
     assert set(result["cycle"]) == {1, 2}
     assert result["project_duration_workdays"] is None
+
+def test_critical_path_respects_later_baseline_start_dates():
+    result = analyze_critical_path(
+        [
+            {"id": 1, "title": "Early", "duration_days": 1, "start_date": "2026-10-15"},
+            {"id": 2, "title": "Later", "duration_days": 1, "start_date": "2026-10-20"},
+        ]
+    )
+    by_id = {item["id"]: item for item in result["activities"]}
+    assert by_id[2]["earliest_start_workday"] == 4
+    assert by_id[2]["earliest_start"] == date(2026, 10, 20)
+    assert result["project_duration_workdays"] == 5
+
