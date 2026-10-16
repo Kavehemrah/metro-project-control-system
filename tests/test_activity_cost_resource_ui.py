@@ -143,3 +143,37 @@ def test_resource_requirement_dialog_filters_source_resources_by_category(monkey
 
     page.close()
     assert app is not None
+
+
+
+def test_finance_page_keeps_long_summaries_inside_task_tabs(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db_path = tmp_path / "finance-tabs.db"
+    conn = db_connect(db_path)
+    conn.execute(
+        "INSERT INTO project(id,name,contract_value,period_label) VALUES(1,'Finance UI test',100000,'مهر 1405')"
+    )
+    conn.execute(
+        "INSERT INTO kpi(project_id,physical_progress,revenue,cost,balance,revenue_progress) "
+        "VALUES(1,0,1000,600,400,0)"
+    )
+    conn.execute(
+        "INSERT INTO monthly_finance(project_id,month,revenue,cost,source) "
+        "VALUES(1,'مهر 1405',1000,600,'EXCEL')"
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(modules, "connect", lambda: db_connect(db_path))
+    page = modules.FinancePage()
+
+    assert page.finance_tabs.count() == 4
+    assert [page.finance_tabs.tabText(index) for index in range(4)] == [
+        "پوشش هزینه فعالیت‌ها", "دفتر مالی واقعی", "خلاصه دوره‌ای", "تخصیص به فعالیت"
+    ]
+    assert page.coverage_summary.parentWidget() is page.finance_tabs.widget(0)
+    assert page.actual_summary.parentWidget() is page.finance_tabs.widget(1)
+    assert page.forecast_summary.parentWidget() is page.finance_tabs.widget(2)
+
+    page.close()
+    assert app is not None
