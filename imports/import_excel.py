@@ -898,7 +898,6 @@ def import_workbook(path, db_path: str | Path | None = None):
             conn.execute("DELETE FROM revenue_entry WHERE project_id=1 AND source='EXCEL'")
         if financial_entries["cost"]:
             conn.execute("DELETE FROM cost_entry WHERE project_id=1 AND source='EXCEL'")
-        conn.execute("DELETE FROM activity_dependency WHERE project_id=1 AND source='INFERRED'")
         if physical:
             conn.execute("DELETE FROM physical_progress_entry WHERE project_id=1 AND source='EXCEL'")
 
@@ -1069,7 +1068,11 @@ def import_workbook(path, db_path: str | Path | None = None):
                 )
 
         # Do not destroy the existing model when a workbook layout cannot be parsed.
-        if operational:
+        # Physical progress supplies volume and baseline actuals used by the activity model.
+        # If it cannot be parsed, do not merge the operational plan into activity rows:
+        # _upsert_activity would otherwise reset previously imported actuals/quantities.
+        if operational and physical:
+            conn.execute("DELETE FROM activity_dependency WHERE project_id=1 AND source='INFERRED'")
             imported_activity_ids = set()
             activity_ids_by_key = {}
             for item in operational:
@@ -1119,12 +1122,21 @@ def import_workbook(path, db_path: str | Path | None = None):
                         "MEDIUM",
                     ),
                 )
-        else:
+        elif not operational:
             conn.execute(
-                    "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
+                "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
                 (
                     "ورود برنامه عملیاتی انجام نشد",
                     "ساختار شیت «برنامه عملیاتی» شناسایی نشد؛ داده‌های فعالیت قبلی حفظ شدند.",
+                    "HIGH",
+                ),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
+                (
+                    "به‌روزرسانی فعالیت‌ها متوقف شد",
+                    "برنامه عملیاتی شناسایی شد، اما شیت پیشرفت فیزیکی قابل استخراج نبود؛ برای جلوگیری از بازنویسی حجم و عملکرد مبنای قبلی، به‌روزرسانی فعالیت‌ها و وابستگی‌ها انجام نشد.",
                     "HIGH",
                 ),
             )
@@ -1137,7 +1149,7 @@ def import_workbook(path, db_path: str | Path | None = None):
             )
             for item in operational
         }
-        unmatched_physical = len(set(physical) - operational_keys)
+        unmatched_physical = len(set(physical) - operational_keys) if physical and operational else 0
         if unmatched_physical:
             conn.execute(
                 "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
@@ -1148,7 +1160,7 @@ def import_workbook(path, db_path: str | Path | None = None):
                 ),
             )
 
-        unmatched_operational = len(operational_keys - set(physical))
+        unmatched_operational = len(operational_keys - set(physical)) if physical and operational else 0
         if unmatched_operational:
             conn.execute(
                 "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
