@@ -311,4 +311,4 @@ def test_quarantined_activity_revenue_keeps_excel_summary_as_reference(tmp_path)
 
     assert result["revenue_budget_linked"] == 0
     assert result["revenue_summary_reference"] == 10000
-    assert result["revenue_unallocated"] == 0
+    assert result["revenue_budget_unallocated"] == 0

@@ -184,21 +184,39 @@ def _parse_project_metadata(workbook):
     }
 
 
-def _parse_summary_metrics(workbook):
+def _parse_summary_metrics(workbook, formula_workbook=None):
     if "خلاصه گزارش" not in workbook.sheetnames:
         raise ValueError("Sheet 'خلاصه گزارش' was not found.")
 
     sheet = workbook["خلاصه گزارش"]
+    formula_sheet = (
+        formula_workbook["خلاصه گزارش"]
+        if formula_workbook is not None and "خلاصه گزارش" in formula_workbook.sheetnames
+        else None
+    )
+    unavailable_kpis = []
+
+    def required_summary_number(address, label):
+        value = sheet[address].value
+        formula = formula_sheet[address].value if formula_sheet is not None else None
+        if value is None and isinstance(formula, str) and formula.lstrip().startswith("="):
+            # The workbook contains a formula, but no cached result is available.
+            # Keep the field unknown so import can preserve the prior persisted KPI.
+            unavailable_kpis.append(f"{address} ({label})")
+            return None
+        return _required_number(value, f"خلاصه گزارش!{address} ({label})")
+
     summary = {
-        "physical_progress": _required_number(sheet["F5"].value, "خلاصه گزارش!F5 (پیشرفت فیزیکی)"),
-        "revenue": _required_number(sheet["F11"].value, "خلاصه گزارش!F11 (درآمد)"),
+        "physical_progress": required_summary_number("F5", "پیشرفت فیزیکی"),
+        "revenue": required_summary_number("F11", "درآمد"),
         "contract_revenue": _clean_number(sheet["F7"].value),
         "adjustment": _clean_number(sheet["F8"].value),
         "adjustment_difference": _clean_number(sheet["F9"].value),
         "other_income": _clean_number(sheet["F10"].value),
-        "cost": _required_number(sheet["F20"].value, "خلاصه گزارش!F20 (هزینه)"),
-        "revenue_progress": _required_number(sheet["F12"].value, "خلاصه گزارش!F12 (درصد پیشرفت درآمدی)"),
+        "cost": required_summary_number("F20", "هزینه"),
+        "revenue_progress": required_summary_number("F12", "درصد پیشرفت درآمدی"),
         "monthly_finance": [],
+        "unavailable_kpis": unavailable_kpis,
     }
 
     summary["total_revenue"] = summary["revenue"]
@@ -209,12 +227,16 @@ def _parse_summary_metrics(workbook):
         if revenue or cost:
             summary["monthly_finance"].append((label, revenue, cost))
 
-    if not summary["monthly_finance"]:
+    if not summary["monthly_finance"] and summary["total_revenue"] is not None and summary["cost"] is not None:
         summary["monthly_finance"] = [
             ("دوره گزارش", summary["total_revenue"], summary["cost"])
         ]
 
-    summary["balance"] = summary["total_revenue"] - summary["cost"]
+    summary["balance"] = (
+        summary["total_revenue"] - summary["cost"]
+        if summary["total_revenue"] is not None and summary["cost"] is not None
+        else None
+    )
     return summary
 
 
@@ -866,7 +888,7 @@ def import_workbook(path, db_path: str | Path | None = None):
 
     try:
         metadata = _parse_project_metadata(workbook_values)
-        metrics = _parse_summary_metrics(workbook_values)
+        metrics = _parse_summary_metrics(workbook_values, workbook_formulas)
         physical = _parse_physical_progress(workbook_values)
         operational = _parse_operational_plan(workbook_values)
         detail_cost = _parse_detail_cost(workbook_values)
@@ -895,19 +917,34 @@ def import_workbook(path, db_path: str | Path | None = None):
             (metadata["name"], metadata["contract_value"], metadata["period_label"]),
         )
 
+        previous_kpi = conn.execute(
+            """
+            SELECT physical_progress,revenue,cost,balance,revenue_progress
+            FROM kpi WHERE project_id=1
+            ORDER BY rowid DESC LIMIT 1
+            """
+        ).fetchone()
+
+        def persisted_kpi_value(metric_key, previous_column):
+            value = metrics[metric_key]
+            if value is not None:
+                return value
+            return float(previous_kpi[previous_column] or 0) if previous_kpi else 0.0
+
+        kpi_values = (
+            persisted_kpi_value("physical_progress", "physical_progress"),
+            persisted_kpi_value("total_revenue", "revenue"),
+            persisted_kpi_value("cost", "cost"),
+            persisted_kpi_value("balance", "balance"),
+            persisted_kpi_value("revenue_progress", "revenue_progress"),
+        )
         conn.execute("DELETE FROM kpi WHERE project_id=1")
         conn.execute(
             """
             INSERT INTO kpi(project_id, physical_progress, revenue, cost, balance, revenue_progress)
             VALUES(1,?,?,?,?,?)
             """,
-            (
-                metrics["physical_progress"],
-                metrics["total_revenue"],
-                metrics["cost"],
-                metrics["balance"],
-                metrics["revenue_progress"],
-            ),
+            kpi_values,
         )
 
         imported_months = []
@@ -935,6 +972,19 @@ def import_workbook(path, db_path: str | Path | None = None):
             )
 
         conn.execute("DELETE FROM discrepancy WHERE project_id=1 AND source='EXCEL'")
+        if metrics["unavailable_kpis"]:
+            conn.execute(
+                """
+                INSERT INTO discrepancy(project_id,title,detail,severity,source)
+                VALUES(1,?,?,?,'EXCEL')
+                """,
+                (
+                    "نتیجه فرمول KPI در Excel در دسترس نیست",
+                    "برای جلوگیری از بازنویسی مقدار قبلی، فیلدهای زیر از نتیجه cached خالی بودند و مقدار ذخیره‌شده قبلی حفظ شد (در ورود اولیه مقدار ۰ باقی ماند): "
+                    + "، ".join(metrics["unavailable_kpis"]),
+                    "HIGH",
+                ),
+            )
         # Replace imported rows only when the corresponding section was parsed successfully.
         # An empty parser result can mean a changed workbook layout; preserve prior Excel data
         # and record a diagnostic instead of silently erasing it.
@@ -1215,7 +1265,11 @@ def import_workbook(path, db_path: str | Path | None = None):
                 ),
             )
 
-        discrepancy = detect_finance_discrepancy(metrics["cost"], detail_cost)
+        discrepancy = (
+            detect_finance_discrepancy(metrics["cost"], detail_cost)
+            if metrics["cost"] is not None
+            else None
+        )
         if discrepancy:
             conn.execute(
                 "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
