@@ -473,6 +473,152 @@ def _parse_detail_cost(workbook):
     return subtotals[-1] if subtotals else 0.0
 
 
+
+def _detail_cost_reconciliation_findings(
+    workbook_values, workbook_formulas, summary_cost: float | None, detail_cost: float
+) -> list[dict]:
+    """Return conservative diagnostics for suspicious detail-cost reconciliation.
+
+    This function never changes or reallocates costs. It reports exact amount matches
+    and non-zero detail rows excluded by a SUM range so an operator can verify them.
+    """
+    sheet = _find_sheet(
+        workbook_values, ["عملکرد مالی-هزینه‌ها", "عملکرد مالی-هزینه ها"]
+    )
+    if sheet is None:
+        return []
+
+    formula_sheet = (
+        workbook_formulas[sheet.title]
+        if workbook_formulas is not None and sheet.title in workbook_formulas.sheetnames
+        else None
+    )
+    total_col = next(
+        (
+            col_no
+            for col_no in range(1, sheet.max_column + 1)
+            if _normal_key(_clean_text(sheet.cell(3, col_no).value)) in {"مجموع", "جمع"}
+        ),
+        None,
+    )
+    if total_col is None:
+        return []
+
+    findings = []
+    summary_difference = (
+        float(detail_cost or 0) - float(summary_cost or 0)
+        if summary_cost is not None
+        else None
+    )
+
+    # If the total gap exactly matches one detail line, surface it as a lead,
+    # not an automatic correction or proof of error.
+    if summary_difference is not None and abs(summary_difference) > 1:
+        tolerance = max(0.1, abs(summary_difference) * 1e-9)
+        current_group = ""
+        matching_rows = []
+        for row_no in range(4, sheet.max_row + 1):
+            group_label = _clean_text(sheet.cell(row_no, 2).value)
+            item_label = _clean_text(sheet.cell(row_no, 3).value)
+            combined_label = _normal_key(f"{group_label} {item_label}")
+            if "مجموع" in combined_label or "جمع" in combined_label:
+                continue
+            if group_label:
+                current_group = group_label
+            if not item_label:
+                continue
+            amount = _clean_number(sheet.cell(row_no, total_col).value)
+            if math.isclose(abs(amount), abs(summary_difference), rel_tol=1e-9, abs_tol=tolerance):
+                matching_rows.append((row_no, current_group, item_label, amount))
+
+        if len(matching_rows) == 1:
+            row_no, group, item_label, amount = matching_rows[0]
+            group_prefix = f"{group} / " if group else ""
+            findings.append(
+                {
+                    "title": "ردیف تفصیلی متناظر با مغایرت خلاصه",
+                    "detail": (
+                        f"اختلاف هزینه تفصیلی و خلاصه {summary_difference:,.2f} ریال است "
+                        f"و با مبلغ ردیف {row_no} شیت «{sheet.title}» "
+                        f"({group_prefix}{item_label}) به مبلغ {amount:,.2f} ریال "
+                        "مطابقت دارد. این قلم در جمع تفصیلی گزارش‌شده منعکس شده؛ "
+                        "شمول آن در جمع ماهانه شیت «خلاصه گزارش» را بررسی کنید. "
+                        "مبلغی به‌صورت خودکار تغییر یا تخصیص داده نشده است."
+                    ),
+                    "severity": "HIGH",
+                }
+            )
+
+    # Look for a subtotal whose SUM range ends before the subtotal row, leaving
+    # non-zero labelled line items between the end of the range and the subtotal.
+    total_col_letter = openpyxl.utils.get_column_letter(total_col)
+    sum_pattern = re.compile(
+        r"SUM\(\$?([A-Z]{1,3})\$?(\d+):\$?([A-Z]{1,3})\$?(\d+)\)",
+        re.IGNORECASE,
+    )
+    for subtotal_row in range(4, sheet.max_row + 1):
+        labels = _normal_key(
+            " ".join(
+                _clean_text(sheet.cell(subtotal_row, col_no).value)
+                for col_no in (2, 3)
+            )
+        )
+        if "مجموع" not in labels and "جمع" not in labels:
+            continue
+        formula = (
+            formula_sheet.cell(subtotal_row, total_col).value
+            if formula_sheet is not None
+            else None
+        )
+        if not isinstance(formula, str):
+            continue
+        match = sum_pattern.search(formula.upper())
+        if not match:
+            continue
+        start_col, start_row, end_col, end_row = match.groups()
+        if (
+            start_col.upper() != total_col_letter
+            or end_col.upper() != total_col_letter
+        ):
+            continue
+        first_row, last_row = int(start_row), int(end_row)
+        if first_row > last_row or last_row >= subtotal_row - 1:
+            continue
+
+        omitted_rows = []
+        for row_no in range(last_row + 1, subtotal_row):
+            group_label = _clean_text(sheet.cell(row_no, 2).value)
+            item_label = _clean_text(sheet.cell(row_no, 3).value)
+            combined = _normal_key(f"{group_label} {item_label}")
+            if "مجموع" in combined or "جمع" in combined:
+                continue
+            amount = _clean_number(sheet.cell(row_no, total_col).value)
+            if abs(amount) <= 0.01 or not (group_label or item_label):
+                continue
+            omitted_rows.append((row_no, item_label or group_label, amount))
+
+        if omitted_rows:
+            omitted_text = "؛ ".join(
+                f"ردیف {row_no} «{label}»: {amount:,.2f} ریال"
+                for row_no, label, amount in omitted_rows
+            )
+            findings.append(
+                {
+                    "title": "اقلام مبلغ‌دار خارج از بازه فرمول جمع تفصیلی",
+                    "detail": (
+                        f"سلول {total_col_letter}{subtotal_row} در شیت «{sheet.title}» "
+                        f"با فرمول {formula} محاسبه می‌شود، اما ردیف‌های دارای مبلغ زیر "
+                        f"پس از انتهای بازه و قبل از ردیف جمع قرار دارند: {omitted_text}. "
+                        "این اقلام در این جمع واسط منظور نمی‌شوند؛ بررسی کنید که حذف آن‌ها "
+                        "عمدی است یا باید در جمع گروه و جمع کل لحاظ شوند. "
+                        "هیچ مبلغی خودکار تغییر داده نشده است."
+                    ),
+                    "severity": "HIGH",
+                }
+            )
+
+    return findings
+
 def _parse_financial_entries(workbook):
     sheet = workbook["خلاصه گزارش"] if "خلاصه گزارش" in workbook.sheetnames else None
     if sheet is None:
@@ -1274,6 +1420,14 @@ def import_workbook(path, db_path: str | Path | None = None):
             conn.execute(
                 "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
                 (discrepancy["title"], discrepancy["detail"], discrepancy["severity"]),
+            )
+
+        for finding in _detail_cost_reconciliation_findings(
+            workbook_values, workbook_formulas, metrics["cost"], detail_cost
+        ):
+            conn.execute(
+                "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
+                (finding["title"], finding["detail"], finding["severity"]),
             )
 
         for error in formula_errors:
