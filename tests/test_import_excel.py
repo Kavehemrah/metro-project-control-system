@@ -592,3 +592,20 @@ def test_failed_physical_section_parse_preserves_previous_excel_rows(tmp_path):
     conn.close()
     assert preserved == 1
     assert warning == 1
+
+
+
+def test_import_workbook_returns_counts_and_import_warnings(tmp_path):
+    workbook = Path(__file__).resolve().parents[1] / "metro-project-control-system.xlsx"
+    report = import_workbook(str(workbook), db_path=tmp_path / "report.db")
+
+    assert report["project"]
+    assert report["activities"] > 0
+    assert report["physical_rows"] > 0
+    assert report["resources"] > 0
+    assert report["resource_periods"] > 0
+    assert report["risks"] > 0
+    assert report["revenue_rows"] > 0
+    assert report["cost_rows"] > 0
+    assert isinstance(report["warnings"], list)
+    assert any(item["title"] == "خطای فرمول Excel" for item in report["warnings"])
