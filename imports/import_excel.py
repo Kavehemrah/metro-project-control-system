@@ -891,10 +891,16 @@ def import_workbook(path, db_path: str | Path | None = None):
             )
 
         conn.execute("DELETE FROM discrepancy WHERE project_id=1 AND source='EXCEL'")
-        conn.execute("DELETE FROM revenue_entry WHERE project_id=1 AND source='EXCEL'")
-        conn.execute("DELETE FROM cost_entry WHERE project_id=1 AND source='EXCEL'")
+        # Replace imported rows only when the corresponding section was parsed successfully.
+        # An empty parser result can mean a changed workbook layout; preserve prior Excel data
+        # and record a diagnostic instead of silently erasing it.
+        if financial_entries["revenue"]:
+            conn.execute("DELETE FROM revenue_entry WHERE project_id=1 AND source='EXCEL'")
+        if financial_entries["cost"]:
+            conn.execute("DELETE FROM cost_entry WHERE project_id=1 AND source='EXCEL'")
         conn.execute("DELETE FROM activity_dependency WHERE project_id=1 AND source='INFERRED'")
-        conn.execute("DELETE FROM physical_progress_entry WHERE project_id=1 AND source='EXCEL'")
+        if physical:
+            conn.execute("DELETE FROM physical_progress_entry WHERE project_id=1 AND source='EXCEL'")
 
         imported_resource_ids = set()
         for item in resources:
@@ -1009,6 +1015,28 @@ def import_workbook(path, db_path: str | Path | None = None):
             conn.execute(
                 f"DELETE FROM risk WHERE project_id=1 AND source='EXCEL' AND id NOT IN ({placeholders})",
                 tuple(imported_risk_ids),
+            )
+
+        if not financial_entries["revenue"]:
+            conn.execute(
+                "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
+                ("ورود ریز درآمد Excel نیازمند بررسی است",
+                 "در شیت خلاصه گزارش ردیف درآمد دوره‌ای قابل استخراج شناسایی نشد؛ رکوردهای Excel قبلی حفظ شدند. ساختار شیت یا سلول‌های مقدار را بررسی کنید.",
+                 "MEDIUM"),
+            )
+        if not financial_entries["cost"]:
+            conn.execute(
+                "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
+                ("ورود ریز هزینه Excel نیازمند بررسی است",
+                 "در شیت خلاصه گزارش ردیف هزینه دوره‌ای قابل استخراج شناسایی نشد؛ رکوردهای Excel قبلی حفظ شدند. ساختار شیت یا سلول‌های مقدار را بررسی کنید.",
+                 "MEDIUM"),
+            )
+        if not physical:
+            conn.execute(
+                "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
+                ("ورود پیشرفت فیزیکی Excel انجام نشد",
+                 "ساختار یا ردیف‌های شیت پیشرفت فیزیکی شناسایی نشد؛ داده‌های خام Excel قبلی حفظ شدند.",
+                 "HIGH"),
             )
 
         for entry in financial_entries["revenue"]:
