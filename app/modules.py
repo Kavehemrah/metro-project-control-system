@@ -2511,7 +2511,7 @@ class SettingsPage(QWidget):
         try:
             from imports.import_excel import import_workbook
 
-            import_workbook(path)
+            report = import_workbook(path)
         except (
             OSError,
             ValueError,
@@ -2522,5 +2522,31 @@ class SettingsPage(QWidget):
         ) as error:
             QMessageBox.critical(self, "خطای ورود اطلاعات", str(error))
             return
-        QMessageBox.information(self, "ورود اطلاعات", "اطلاعات فایل Excel وارد شد.")
+
+        summary = (
+            f"پروژه: {report.get('project', 'نامشخص')}\\n\\n"
+            "رکوردهای Excel موجود پس از ورود:\\n"
+            f"• فعالیت‌ها: {report.get('activities', 0)}\\n"
+            f"• ردیف‌های پیشرفت فیزیکی: {report.get('physical_rows', 0)}\\n"
+            f"• منابع: {report.get('resources', 0)}\\n"
+            f"• دوره‌های منابع: {report.get('resource_periods', 0)}\\n"
+            f"• ریسک‌ها: {report.get('risks', 0)}\\n"
+            f"• ردیف‌های درآمد: {report.get('revenue_rows', 0)}\\n"
+            f"• ردیف‌های هزینه: {report.get('cost_rows', 0)}\\n"
+            f"• موارد نیازمند بررسی: {len(report.get('warnings', []))}"
+        )
+        warnings = report.get("warnings", [])
+        if warnings:
+            details = "\\n\\n".join(
+                f"• {item['title']}: {item['detail']}" for item in warnings[:8]
+            )
+            if len(warnings) > 8:
+                details += f"\\n\\nو {len(warnings) - 8} مورد دیگر."
+            QMessageBox.warning(
+                self,
+                "ورود Excel با موارد نیازمند بررسی",
+                summary + "\\n\\nموارد مهم:\\n" + details,
+            )
+        else:
+            QMessageBox.information(self, "گزارش ورود Excel", summary)
         self.imported_callback()
