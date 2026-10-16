@@ -69,15 +69,62 @@ def sync_activity_revenue_from_physical(
     activity_ids_by_key: dict[tuple[str, str, str], int],
     project_id: int = 1,
 ) -> int:
-    """Create per-activity revenue budgets using Excel unit-rate × total quantity.
+    """Sync matched Excel activity revenue; quarantine previously linked amounts that no longer match.
 
-    Keys must be the normalized physical-progress keys used by the Excel importer.
-    Summary revenue rows are kept unchanged as project-level reference figures.
+    Unmatched prior budgets remain auditable but are excluded from active revenue totals.
     """
-    conn.execute(
-        "DELETE FROM revenue_entry WHERE project_id=? AND source='EXCEL_ACTIVITY'",
+    matched_activity_ids = set()
+    for key, item in physical_items.items():
+        activity_id = activity_ids_by_key.get(key)
+        unit_rate = max(0.0, float(item.get("unit_rate") or 0))
+        total_qty = max(0.0, float(item.get("total") or 0))
+        if activity_id is not None and unit_rate > 0 and total_qty > 0:
+            matched_activity_ids.add(int(activity_id))
+
+    previous_rows = conn.execute(
+        """
+        SELECT re.id, re.activity_id, re.category, re.amount, re.source,
+               a.position, a.zone, a.title
+        FROM revenue_entry re
+        LEFT JOIN activity a
+          ON a.id=re.activity_id AND a.project_id=re.project_id
+        WHERE re.project_id=?
+          AND re.source IN ('EXCEL_ACTIVITY','EXCEL_ACTIVITY_UNMATCHED')
+        ORDER BY re.id
+        """,
         (project_id,),
-    )
+    ).fetchall()
+
+    # Keep entries whose activity cannot be confidently rebuilt. If matching returns
+    # on a later import, the quarantined row is removed and rebuilt from current data.
+    for row in previous_rows:
+        activity_id = row["activity_id"]
+        if activity_id is not None and int(activity_id) in matched_activity_ids:
+            conn.execute("DELETE FROM revenue_entry WHERE id=?", (row["id"],))
+            continue
+
+        conn.execute(
+            "UPDATE revenue_entry SET source='EXCEL_ACTIVITY_UNMATCHED' WHERE id=?",
+            (row["id"],),
+        )
+        conn.execute(
+            """
+            INSERT INTO discrepancy(project_id,title,detail,severity,source)
+            VALUES(?,?,?,?, 'EXCEL')
+            """,
+            (
+                project_id,
+                "درآمد فعالیت نیازمند تطبیق مجدد",
+                (
+                    f"رکورد درآمد قبلی با شناسه {row['id']} و مبلغ "
+                    f"{float(row['amount'] or 0):,.2f} حفظ شد، اما اتصال آن به فعالیت "
+                    f"«{row['position'] or ''} / {row['zone'] or ''} / {row['title'] or row['category']}» "
+                    "در فایل جاری تأیید نشد. این مبلغ تا زمان تطبیق، در درآمد فعالیتی تأییدشده محاسبه نمی‌شود."
+                ),
+                "HIGH",
+            ),
+        )
+
     created = 0
     for key, item in physical_items.items():
         activity_id = activity_ids_by_key.get(key)
@@ -85,6 +132,7 @@ def sync_activity_revenue_from_physical(
         total_qty = max(0.0, float(item.get("total") or 0))
         if unit_rate <= 0 or total_qty <= 0:
             continue
+
         if activity_id is None:
             conn.execute(
                 """
@@ -99,6 +147,7 @@ def sync_activity_revenue_from_physical(
                 ),
             )
             continue
+
         amount = unit_rate * total_qty
         conn.execute(
             """
@@ -115,7 +164,6 @@ def sync_activity_revenue_from_physical(
         )
         created += 1
     return created
-
 
 def activity_resource_forecast(conn: sqlite3.Connection, project_id: int = 1) -> list[dict]:
     """Calculate per-unit resource demand; use peak daily demand for workforce/equipment."""

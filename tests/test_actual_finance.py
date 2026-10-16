@@ -248,3 +248,37 @@ def test_project_progress_summary_is_live_and_revenue_weighted(tmp_path):
     conn.close()
 
     assert updated["progress_pct"] == 37.5
+
+
+
+def test_unit_cost_build_up_takes_precedence_over_legacy_budget_on_same_activity(tmp_path):
+    conn = connect(tmp_path / "duplicate-budget-sources.db")
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Finance precedence test')")
+    activity_id = _activity(conn, "Same activity", quantity=10, actual_qty=5)
+    conn.execute(
+        """
+        INSERT INTO activity_cost_item(
+            project_id,activity_id,category,item_name,unit,
+            quantity_per_activity_unit,unit_price,source
+        ) VALUES(1,?,'مصالح','بتن','مترمکعب',2,100,'MANUAL')
+        """,
+        (activity_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO cost_entry(project_id,activity_id,period,category,amount,source)
+        VALUES(1,?,'مهر 1405','Legacy budget',3000,'EXCEL')
+        """,
+        (activity_id,),
+    )
+
+    result = finance_performance(conn, 1)
+    coverage = {
+        row["activity_id"]: row for row in activity_cost_coverage(conn, 1)
+    }[activity_id]
+    conn.close()
+
+    # 10 activity units × 2 input units per activity unit × 100 per input unit.
+    assert result["cost_budget_linked"] == 2000
+    assert coverage["base_cost_budget"] == 2000
+    assert coverage["budget_source"] == "ریزهزینه واحدمحور"

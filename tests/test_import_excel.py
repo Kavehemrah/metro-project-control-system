@@ -685,3 +685,132 @@ def test_failed_physical_parse_preserves_activity_actuals_revenue_and_dependenci
     assert revenue_after["amount"] == 12345
     assert dependencies_after == 1
     assert blocked_warning == 1
+
+
+
+def test_invalid_contract_value_aborts_import_without_mutating_existing_project(tmp_path):
+    import pytest
+    from openpyxl import load_workbook
+
+    source = Path(__file__).resolve().parents[1] / "metro-project-control-system.xlsx"
+    altered = tmp_path / "blank-contract-value.xlsx"
+    workbook = load_workbook(source)
+    workbook["پیشرفت درآمدی پروژه"]["D11"] = None
+    workbook.save(altered)
+    workbook.close()
+
+    db_path = tmp_path / "existing-project.db"
+    conn = connect(db_path)
+    conn.execute(
+        "INSERT INTO project(id,name,contract_value) VALUES(1,'Existing project',987654321)"
+    )
+    conn.execute(
+        """
+        INSERT INTO kpi(project_id,physical_progress,revenue,cost,balance,revenue_progress)
+        VALUES(1,12,34,5,29,8)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(ValueError, match="D11"):
+        import_workbook(str(altered), db_path=db_path)
+
+    conn = connect(db_path)
+    project = conn.execute(
+        "SELECT contract_value FROM project WHERE id=1"
+    ).fetchone()
+    kpi = conn.execute(
+        "SELECT physical_progress,revenue,cost,balance,revenue_progress FROM kpi WHERE project_id=1"
+    ).fetchone()
+    conn.close()
+
+    assert project["contract_value"] == 987654321
+    assert tuple(kpi) == (12, 34, 5, 29, 8)
+
+
+def test_project_metadata_rejects_missing_contract_sheet():
+    import pytest
+    from openpyxl import Workbook
+    from imports.import_excel import _parse_project_metadata
+
+    workbook = Workbook()
+    workbook.active.title = "جلد"
+    workbook["جلد"]["B2"] = "Test project"
+
+    with pytest.raises(ValueError, match="پیشرفت درآمدی پروژه"):
+        _parse_project_metadata(workbook)
+    workbook.close()
+
+
+def test_summary_metrics_reject_missing_critical_kpi():
+    import pytest
+    from openpyxl import Workbook
+    from imports.import_excel import _parse_summary_metrics
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "خلاصه گزارش"
+    sheet["F5"] = 10
+    sheet["F11"] = 20
+    sheet["F20"] = None
+    sheet["F12"] = 30
+
+    with pytest.raises(ValueError, match="F20"):
+        _parse_summary_metrics(workbook)
+    workbook.close()
+
+
+def test_unmatched_activity_revenue_is_quarantined_and_can_be_rebuilt(tmp_path):
+    from app.services.activity_costs import sync_activity_revenue_from_physical
+
+    conn = connect(tmp_path / "unmatched-revenue.db")
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Revenue sync test')")
+    cursor = conn.execute(
+        """
+        INSERT INTO activity(project_id,position,zone,title,quantity,source)
+        VALUES(1,'Tunnel 4','East line','Old activity title',10,'EXCEL')
+        """
+    )
+    activity_id = int(cursor.lastrowid)
+    conn.execute(
+        """
+        INSERT INTO revenue_entry(project_id,activity_id,period,category,amount,source)
+        VALUES(1,?,'بودجه کل فعالیت','Prior activity revenue',12345,'EXCEL_ACTIVITY')
+        """,
+        (activity_id,),
+    )
+
+    old_key = ("tunnel4", "eastline", "oldactivitytitle")
+    new_key = ("tunnel4", "eastline", "renamedactivity")
+    unmatched_item = {
+        "row_no": 17, "position": "Tunnel 4", "zone": "East line",
+        "title": "Renamed activity", "unit_rate": 100, "total": 6,
+    }
+
+    created = sync_activity_revenue_from_physical(
+        conn, {new_key: unmatched_item}, {old_key: activity_id}, project_id=1
+    )
+    quarantined = conn.execute(
+        "SELECT amount,source FROM revenue_entry WHERE project_id=1 AND activity_id=?",
+        (activity_id,),
+    ).fetchone()
+    warning = conn.execute(
+        "SELECT COUNT(*) FROM discrepancy WHERE project_id=1 AND title='درآمد فعالیت نیازمند تطبیق مجدد'"
+    ).fetchone()[0]
+    assert created == 0
+    assert tuple(quarantined) == (12345, "EXCEL_ACTIVITY_UNMATCHED")
+    assert warning == 1
+
+    matched_item = {**unmatched_item, "title": "Old activity title"}
+    created_again = sync_activity_revenue_from_physical(
+        conn, {old_key: matched_item}, {old_key: activity_id}, project_id=1
+    )
+    active = conn.execute(
+        "SELECT amount,source FROM revenue_entry WHERE project_id=1 AND activity_id=?",
+        (activity_id,),
+    ).fetchall()
+    assert created_again == 1
+    assert len(active) == 1
+    assert tuple(active[0]) == (600, "EXCEL_ACTIVITY")
+    conn.close()

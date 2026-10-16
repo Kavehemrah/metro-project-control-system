@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -32,6 +33,44 @@ def _clean_number(value) -> float:
         return float(text)
     except ValueError:
         return 0.0
+
+
+def _required_number(value, field_name: str) -> float:
+    """Parse a required Excel number without silently converting invalid input to zero."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        raise ValueError(f"مقدار ضروری {field_name} خالی است.")
+
+    if isinstance(value, bool):
+        raise ValueError(f"مقدار {field_name} عددی معتبر نیست.")
+
+    if isinstance(value, (int, float)):
+        number = float(value)
+    else:
+        text = _clean_text(value).translate(
+            str.maketrans(
+                "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+                "01234567890123456789",
+            )
+        )
+        text = (
+            text.replace(",", "")
+            .replace("٬", "")
+            .replace("٫", ".")
+            .replace(" ", "")
+            .replace("%", "")
+            .replace("٪", "")
+        )
+        try:
+            number = float(text)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"مقدار {field_name} عددی معتبر نیست: {value!r}"
+            ) from exc
+
+    if not math.isfinite(number):
+        raise ValueError(f"مقدار {field_name} عددی معتبر نیست.")
+
+    return number
 
 
 def _row_text(row) -> str:
@@ -127,19 +166,20 @@ def _summary_month_columns(sheet):
 
 
 def _parse_project_metadata(workbook):
-    candidates = ["جلد"]
-    sheet = next((workbook[name] for name in candidates if name in workbook.sheetnames), None)
-    if sheet is None:
-        return {"name": "پروژه مترو", "period_label": "دوره گزارش"}
-
+    sheet = workbook["جلد"] if "جلد" in workbook.sheetnames else None
     contract_sheet = _find_sheet(workbook, ["پیشرفت درآمدی پروژه"])
-    contract_value = 0.0
-    if contract_sheet is not None:
-        contract_value = _clean_number(contract_sheet["D11"].value)
+    if contract_sheet is None:
+        raise ValueError(
+            "شیت «پیشرفت درآمدی پروژه» پیدا نشد؛ ارزش قرارداد قابل اعتبارسنجی نیست."
+        )
 
+    contract_value = _required_number(
+        contract_sheet["D11"].value,
+        "پیشرفت درآمدی پروژه!D11 (ارزش قرارداد)",
+    )
     return {
-        "name": _clean_text(sheet["B2"].value) or "پروژه مترو",
-        "period_label": _clean_text(sheet["J1"].value) or "دوره گزارش",
+        "name": _clean_text(sheet["B2"].value) if sheet and _clean_text(sheet["B2"].value) else "پروژه مترو",
+        "period_label": _clean_text(sheet["J1"].value) if sheet and _clean_text(sheet["J1"].value) else "دوره گزارش",
         "contract_value": contract_value,
     }
 
@@ -150,14 +190,14 @@ def _parse_summary_metrics(workbook):
 
     sheet = workbook["خلاصه گزارش"]
     summary = {
-        "physical_progress": _clean_number(sheet["F5"].value),
-        "revenue": _clean_number(sheet["F11"].value),
+        "physical_progress": _required_number(sheet["F5"].value, "خلاصه گزارش!F5 (پیشرفت فیزیکی)"),
+        "revenue": _required_number(sheet["F11"].value, "خلاصه گزارش!F11 (درآمد)"),
         "contract_revenue": _clean_number(sheet["F7"].value),
         "adjustment": _clean_number(sheet["F8"].value),
         "adjustment_difference": _clean_number(sheet["F9"].value),
         "other_income": _clean_number(sheet["F10"].value),
-        "cost": _clean_number(sheet["F20"].value),
-        "revenue_progress": _clean_number(sheet["F12"].value),
+        "cost": _required_number(sheet["F20"].value, "خلاصه گزارش!F20 (هزینه)"),
+        "revenue_progress": _required_number(sheet["F12"].value, "خلاصه گزارش!F12 (درصد پیشرفت درآمدی)"),
         "monthly_finance": [],
     }
 
@@ -824,15 +864,19 @@ def import_workbook(path, db_path: str | Path | None = None):
     workbook_values = openpyxl.load_workbook(path, data_only=True, read_only=False)
     workbook_formulas = openpyxl.load_workbook(path, data_only=False, read_only=False)
 
-    metadata = _parse_project_metadata(workbook_values)
-    metrics = _parse_summary_metrics(workbook_values)
-    physical = _parse_physical_progress(workbook_values)
-    operational = _parse_operational_plan(workbook_values)
-    detail_cost = _parse_detail_cost(workbook_values)
-    resources = _parse_resources(workbook_values)
-    risks = _parse_risks(workbook_values)
-    financial_entries = _parse_financial_entries(workbook_values)
-    formula_errors = scan_formula_errors(workbook_formulas, workbook_values)
+    try:
+        metadata = _parse_project_metadata(workbook_values)
+        metrics = _parse_summary_metrics(workbook_values)
+        physical = _parse_physical_progress(workbook_values)
+        operational = _parse_operational_plan(workbook_values)
+        detail_cost = _parse_detail_cost(workbook_values)
+        resources = _parse_resources(workbook_values)
+        risks = _parse_risks(workbook_values)
+        financial_entries = _parse_financial_entries(workbook_values)
+        formula_errors = scan_formula_errors(workbook_formulas, workbook_values)
+    finally:
+        workbook_values.close()
+        workbook_formulas.close()
 
     conn = connect(db_path)
     try:
