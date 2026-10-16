@@ -1177,6 +1177,40 @@ def import_workbook(path, db_path: str | Path | None = None):
                 (error["title"], error["detail"], error["severity"]),
             )
 
+        # Return an auditable import summary so the UI can show what was actually loaded.
+        import_report = {
+            "project": metadata["name"],
+            "activities": conn.execute(
+                "SELECT COUNT(*) FROM activity WHERE project_id=1 AND source='EXCEL'"
+            ).fetchone()[0],
+            "physical_rows": conn.execute(
+                "SELECT COUNT(*) FROM physical_progress_entry WHERE project_id=1 AND source='EXCEL'"
+            ).fetchone()[0],
+            "resources": conn.execute(
+                "SELECT COUNT(*) FROM resource WHERE project_id=1 AND source='EXCEL'"
+            ).fetchone()[0],
+            "resource_periods": conn.execute(
+                "SELECT COUNT(*) FROM resource_period WHERE source='EXCEL' AND resource_id IN "
+                "(SELECT id FROM resource WHERE project_id=1 AND source='EXCEL')"
+            ).fetchone()[0],
+            "risks": conn.execute(
+                "SELECT COUNT(*) FROM risk WHERE project_id=1 AND source='EXCEL'"
+            ).fetchone()[0],
+            "revenue_rows": conn.execute(
+                "SELECT COUNT(*) FROM revenue_entry WHERE project_id=1 AND source='EXCEL'"
+            ).fetchone()[0],
+            "cost_rows": conn.execute(
+                "SELECT COUNT(*) FROM cost_entry WHERE project_id=1 AND source='EXCEL'"
+            ).fetchone()[0],
+            "warnings": [
+                {"title": row["title"], "detail": row["detail"], "severity": row["severity"]}
+                for row in conn.execute(
+                    "SELECT title,detail,severity FROM discrepancy "
+                    "WHERE project_id=1 AND source='EXCEL' ORDER BY "
+                    "CASE severity WHEN 'HIGH' THEN 0 WHEN 'MEDIUM' THEN 1 ELSE 2 END, id"
+                )
+            ],
+        }
         conn.commit()
     except Exception:
         conn.rollback()
@@ -1185,6 +1219,8 @@ def import_workbook(path, db_path: str | Path | None = None):
         conn.close()
         workbook_values.close()
         workbook_formulas.close()
+
+    return import_report
 
 
 if __name__ == "__main__":
