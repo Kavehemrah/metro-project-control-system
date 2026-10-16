@@ -2602,8 +2602,11 @@ class SettingsPage(QWidget):
             f"• منابع: {report.get('resources', 0)}\n"
             f"• دوره‌های منابع: {report.get('resource_periods', 0)}\n"
             f"• ریسک‌ها: {report.get('risks', 0)}\n"
-            f"• ردیف‌های درآمد: {report.get('revenue_rows', 0)}\n"
-            f"• ردیف‌های هزینه: {report.get('cost_rows', 0)}\n"
+            f"• ردیف‌های درآمد مرجع Excel: {report.get('revenue_rows', 0)}\n"
+            f"• ردیف‌های هزینه مرجع Excel: {report.get('cost_rows', 0)}\n"
+            f"• درآمدهای متصل به فعالیت: {report.get('activity_revenue_rows', 0)}\n"
+            f"• درآمدهای مرجع بدون تخصیص: {report.get('unallocated_excel_revenue_rows', 0)} ردیف\n"
+            f"• هزینه‌های مرجع بدون تخصیص: {report.get('unallocated_excel_cost_rows', 0)} ردیف\n"
             f"• موارد نیازمند بررسی: {len(report.get('warnings', []))}"
         )
         warnings = report.get("warnings", [])
