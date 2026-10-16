@@ -1316,6 +1316,14 @@ def import_workbook(path, db_path: str | Path | None = None):
                 "SELECT COUNT(*) FROM revenue_entry WHERE project_id=1 "
                 "AND source='EXCEL_ACTIVITY' AND activity_id IS NOT NULL"
             ).fetchone()[0],
+            "unmatched_activity_revenue_rows": conn.execute(
+                "SELECT COUNT(*) FROM unmatched_activity_revenue "
+                "WHERE project_id=1 AND status='CURRENT'"
+            ).fetchone()[0],
+            "unmatched_activity_revenue_amount": conn.execute(
+                "SELECT COALESCE(SUM(amount),0) FROM unmatched_activity_revenue "
+                "WHERE project_id=1 AND status='CURRENT'"
+            ).fetchone()[0],
             "unallocated_excel_revenue_rows": conn.execute(
                 "SELECT COUNT(*) FROM revenue_entry WHERE project_id=1 AND source='EXCEL' AND activity_id IS NULL"
             ).fetchone()[0],

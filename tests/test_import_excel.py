@@ -608,6 +608,8 @@ def test_import_workbook_returns_counts_and_import_warnings(tmp_path):
     assert report["revenue_rows"] > 0
     assert report["cost_rows"] > 0
     assert report["activity_revenue_rows"] > 0
+    assert report["unmatched_activity_revenue_rows"] > 0
+    assert report["unmatched_activity_revenue_amount"] > 0
     assert report["unallocated_excel_revenue_rows"] > 0
     assert report["unallocated_excel_cost_rows"] > 0
     assert isinstance(report["warnings"], list)
@@ -801,6 +803,29 @@ def test_unmatched_activity_revenue_is_quarantined_and_can_be_rebuilt(tmp_path):
     assert created == 0
     assert tuple(quarantined) == (12345, "EXCEL_ACTIVITY_UNMATCHED")
     assert warning == 1
+
+    unmatched = conn.execute(
+        """
+        SELECT source_row_no, source_key, amount, status
+        FROM unmatched_activity_revenue WHERE project_id=1
+        """
+    ).fetchall()
+    assert len(unmatched) == 1
+    assert tuple(unmatched[0]) == (
+        17, '["tunnel4","eastline","renamedactivity"]', 600, "CURRENT"
+    )
+
+    # Importing the same unmatched source row again must update, not duplicate, it.
+    repeated_created = sync_activity_revenue_from_physical(
+        conn, {new_key: unmatched_item}, {old_key: activity_id}, project_id=1
+    )
+    assert repeated_created == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM unmatched_activity_revenue WHERE project_id=1 AND status='CURRENT'"
+    ).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT amount FROM unmatched_activity_revenue WHERE project_id=1 AND status='CURRENT'"
+    ).fetchone()[0] == 600
 
     matched_item = {**unmatched_item, "title": "Old activity title"}
     created_again = sync_activity_revenue_from_physical(

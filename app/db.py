@@ -144,6 +144,25 @@ CREATE TABLE IF NOT EXISTS revenue_entry (
     FOREIGN KEY(activity_id) REFERENCES activity(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS unmatched_activity_revenue (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL,
+    source_row_no INTEGER NOT NULL,
+    source_key TEXT NOT NULL,
+    position TEXT,
+    zone TEXT,
+    title TEXT,
+    unit TEXT,
+    unit_rate REAL NOT NULL DEFAULT 0,
+    total_qty REAL NOT NULL DEFAULT 0,
+    amount REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'CURRENT'
+        CHECK(status IN ('CURRENT','STALE')),
+    source TEXT NOT NULL DEFAULT 'EXCEL',
+    FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE,
+    UNIQUE(project_id, source_row_no)
+);
+
 CREATE TABLE IF NOT EXISTS cost_entry (
     id INTEGER PRIMARY KEY,
     project_id INTEGER NOT NULL,
