@@ -122,6 +122,17 @@ def finance_performance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
         row["source"] == "EXCEL_ACTIVITY" and row["activity_id"] is not None
         for row in revenue_rows
     )
+    if not physical_revenue_available:
+        # Quarantined budgets still indicate that activity-level revenue mapping was
+        # previously in use; do not reinterpret linked Excel summary rows as activity budgets.
+        physical_revenue_available = conn.execute(
+            """
+            SELECT 1 FROM revenue_entry
+            WHERE project_id=? AND source='EXCEL_ACTIVITY_UNMATCHED'
+            LIMIT 1
+            """,
+            (project_id,),
+        ).fetchone() is not None
     contract_row = conn.execute(
         "SELECT COALESCE(contract_value,0) AS contract_value FROM project WHERE id=?",
         (project_id,),

@@ -282,3 +282,33 @@ def test_unit_cost_build_up_takes_precedence_over_legacy_budget_on_same_activity
     assert result["cost_budget_linked"] == 2000
     assert coverage["base_cost_budget"] == 2000
     assert coverage["budget_source"] == "ریزهزینه واحدمحور"
+
+
+
+def test_quarantined_activity_revenue_keeps_excel_summary_as_reference(tmp_path):
+    conn = connect(tmp_path / "quarantined-revenue-reference.db")
+    conn.execute(
+        "INSERT INTO project(id,name,contract_value) VALUES(1,'Quarantined revenue test',10000)"
+    )
+    activity_id = _activity(conn, "Previously mapped activity", quantity=10, actual_qty=5)
+    conn.execute(
+        """
+        INSERT INTO revenue_entry(project_id,activity_id,period,category,amount,source)
+        VALUES(1,?,'دوره گزارش','Excel summary',10000,'EXCEL')
+        """,
+        (activity_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO revenue_entry(project_id,activity_id,period,category,amount,source)
+        VALUES(1,?,'بودجه کل فعالیت','Prior activity budget',4000,'EXCEL_ACTIVITY_UNMATCHED')
+        """,
+        (activity_id,),
+    )
+
+    result = finance_performance(conn, 1)
+    conn.close()
+
+    assert result["revenue_budget_linked"] == 0
+    assert result["revenue_summary_reference"] == 10000
+    assert result["revenue_unallocated"] == 0
