@@ -74,3 +74,71 @@ def test_main_window_module_imports_with_new_page():
 
     assert hasattr(main, "MainWindow")
     assert hasattr(modules, "ActivityCostResourcePage")
+
+
+
+def test_resource_requirement_dialog_filters_source_resources_by_category(monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QComboBox, QDialog, QDoubleSpinBox, QLineEdit
+
+    app = QApplication.instance() or QApplication([])
+    db_path = tmp_path / "resource-category-dialog.db"
+    conn = db_connect(db_path)
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Dialog test')")
+    activity_id = conn.execute(
+        """
+        INSERT INTO activity(project_id,row_no,position,zone,title,unit,quantity,source)
+        VALUES(1,1,'تونل ۴','خط شرقی','بتن‌ریزی اسلب','متر',10,'MANUAL')
+        """
+    ).lastrowid
+    machine_id = conn.execute(
+        """
+        INSERT INTO resource(project_id,category,title,unit,source)
+        VALUES(1,'ماشین‌آلات','لودر','دستگاه','MANUAL')
+        """
+    ).lastrowid
+    conn.execute(
+        """
+        INSERT INTO resource(project_id,category,title,unit,source)
+        VALUES(1,'نیروی انسانی','تیم بتن‌ریزی','نفر','MANUAL')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO resource(project_id,category,title,unit,source)
+        VALUES(1,'مصالح','سیمان','تن','MANUAL')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(modules, "connect", lambda: db_connect(db_path))
+    page = modules.ActivityCostResourcePage(project_id=1)
+
+    def accept_dialog(dialog):
+        combos = dialog.findChildren(QComboBox)
+        category_selector, resource_selector = combos[0], combos[1]
+        category_selector.setCurrentIndex(category_selector.findData("ماشین‌آلات"))
+        visible_ids = [
+            resource_selector.itemData(index)
+            for index in range(resource_selector.count())
+            if resource_selector.itemData(index) is not None
+        ]
+        assert visible_ids == [machine_id]
+        resource_selector.setCurrentIndex(resource_selector.findData(machine_id))
+        dialog.findChild(QDoubleSpinBox).setValue(1.75)
+        dialog.findChild(QLineEdit).setText("تست ورود منبع")
+        return QDialog.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", accept_dialog)
+    result = page._resource_dialog()
+    assert result is not None
+    values, activity = result
+    assert activity["id"] == activity_id
+    assert values["resource_id"] == machine_id
+    assert values["category"] == "ماشین‌آلات"
+    assert values["resource_title"] == "لودر"
+    assert values["quantity_per_activity_unit"] == 1.75
+    assert values["notes"] == "تست ورود منبع"
+
+    page.close()
+    assert app is not None
