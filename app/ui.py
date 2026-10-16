@@ -262,6 +262,30 @@ class Dashboard(QWidget):
         )
         root.addLayout(actual_cards)
 
+        workflow_frame = QFrame()
+        workflow_frame.setStyleSheet(
+            "QFrame{background:#F3F7F9;border:1px solid #D8E4E9;border-radius:8px;}"
+        )
+        workflow_layout = QVBoxLayout(workflow_frame)
+        workflow_layout.setContentsMargins(16, 12, 16, 12)
+        workflow_layout.setSpacing(6)
+        workflow_title = QLabel("از کجا شروع کنم؟ گردش کار پیشنهادی")
+        workflow_title.setStyleSheet(f"font-size:16px;font-weight:700;color:{TEXT};border:0;")
+        workflow_layout.addWidget(workflow_title)
+        workflow_steps = [
+            ("۱. برنامه‌ریزی", "در «۱ | تعریف فعالیت و برنامه» فعالیت، حجم کل، تاریخ‌ها، پیش‌نیازها و برنامه روزانه را تعریف یا کنترل کن."),
+            ("۲. ثبت اجرا", "در «۲ | ثبت عملکرد روزانه» فقط مقدار واقعی اجراشده و تاریخ آن را ثبت کن؛ برنامه و عملکرد را با هم در یک فرم وارد نکن."),
+            ("۳. برآورد قبل از اجرا", "در «۴ | برآورد هزینه و نیاز هر فعالیت» هزینه پایه و ضریب مصرف مصالح/ماشین‌آلات/نیروی انسانی برای هر واحد فعالیت را تعریف کن."),
+            ("۴. کنترل تأمین", "در منوهای ۵ تا ۷ موجودی، ظرفیت و تأمین کلی منابع را بررسی کن. این منوها جای برآورد نیاز هر فعالیت را نمی‌گیرند."),
+            ("۵. کنترل مالی و مدیریت", "در «۳ | کنترل مالی» ارقام مرجع Excel، دفتر واقعی و پوشش هزینه را جدا بررسی کن؛ در پایان داشبورد، ریسک‌ها و گزارش‌ها را کنترل کن."),
+        ]
+        for step_title, step_text in workflow_steps:
+            line = QLabel(f"<b>{step_title}</b> — {step_text}")
+            line.setWordWrap(True)
+            line.setStyleSheet(f"color:{TEXT};border:0;padding:2px;")
+            workflow_layout.addWidget(line)
+        root.addWidget(workflow_frame)
+
         charts = QHBoxLayout()
         charts.addWidget(
             MiniChart(
