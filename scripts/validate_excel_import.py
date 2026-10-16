@@ -104,7 +104,13 @@ def validate_workbook(workbook: Path) -> int:
                 f"{row['unit_rate']:,.2f} × {row['total_qty']:,.2f} "
                 f"= {row['amount']:,.2f} IRR"
             )
-        print("IMPORT WARNINGS:", len(report.get("warnings", [])))
+        import_warnings = report.get("warnings", [])
+        print("IMPORT WARNINGS:", len(import_warnings))
+        for warning in import_warnings:
+            print(
+                f"  [{warning.get('severity', 'INFO')}] "
+                f"{warning.get('title', 'هشدار')}: {warning.get('detail', '')}"
+            )
         print("DATABASE INTEGRITY:", integrity)
         print("FOREIGN KEY ERRORS:", len(foreign_key_errors))
 
