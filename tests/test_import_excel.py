@@ -857,3 +857,19 @@ def test_excel_validation_script_cli_runs_from_repository_root():
 
     assert result.returncode == 0, result.stderr
     assert "Validate the real Excel workbook" in result.stdout
+
+def test_finance_diagnostic_script_cli_runs_from_repository_root():
+    repository_root = Path(__file__).resolve().parents[1]
+    script_path = repository_root / "scripts" / "diagnose_finance_reconciliation.py"
+    result = subprocess.run(
+        [sys.executable, str(script_path), "--help"],
+        cwd=repository_root,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Read-only source-sheet diagnostics" in result.stdout
+
