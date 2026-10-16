@@ -42,7 +42,19 @@ def test_workbook_import_includes_resource_sheets(tmp_path):
     conn = connect(db_path)
     conn.close()
 
-    import_workbook(str(workbook), db_path=db_path)
+    import_report = import_workbook(str(workbook), db_path=db_path)
+    warning_by_title = {
+        warning["title"]: warning["detail"]
+        for warning in import_report["warnings"]
+    }
+    assert "ردیف تفصیلی متناظر با مغایرت خلاصه" in warning_by_title
+    assert "ردیف 27" in warning_by_title["ردیف تفصیلی متناظر با مغایرت خلاصه"]
+    assert "سایر (انواع لوله، سیم آرماتور و ...)" in warning_by_title[
+        "ردیف تفصیلی متناظر با مغایرت خلاصه"
+    ]
+    assert "اقلام مبلغ‌دار خارج از بازه فرمول جمع تفصیلی" in warning_by_title
+    omitted_costs = warning_by_title["اقلام مبلغ‌دار خارج از بازه فرمول جمع تفصیلی"]
+    assert "M20" in omitted_costs and "ردیف 18" in omitted_costs and "ردیف 19" in omitted_costs
 
     conn = connect(db_path)
     resources = conn.execute("SELECT COUNT(*) FROM resource WHERE project_id=1").fetchone()[0]
