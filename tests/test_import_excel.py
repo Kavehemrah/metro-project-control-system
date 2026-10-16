@@ -607,6 +607,9 @@ def test_import_workbook_returns_counts_and_import_warnings(tmp_path):
     assert report["risks"] > 0
     assert report["revenue_rows"] > 0
     assert report["cost_rows"] > 0
+    assert report["activity_revenue_rows"] > 0
+    assert report["unallocated_excel_revenue_rows"] > 0
+    assert report["unallocated_excel_cost_rows"] > 0
     assert isinstance(report["warnings"], list)
     assert any(item["title"] == "خطای فرمول Excel" for item in report["warnings"])
 
