@@ -1296,6 +1296,29 @@ class ResourcePage(RecordPage):
             "resource",
             query_params=(category,) if category else (),
         )
+        help_text = {
+            "ماشین‌آلات": (
+                "کار این صفحه: فهرست ماشین‌آلات، ظرفیت/موجودی کلی و اطلاعات تأمین را ثبت یا اصلاح کن. "
+                "برای اینکه بدانی هر فعالیت به چه ماشین‌آلاتی نیاز دارد، به «۴ | برآورد هزینه و نیاز هر فعالیت» برو. "
+                "این صفحه برنامه استقرار روزانه یا تداخل زمانی ماشین‌آلات را به‌طور کامل مدیریت نمی‌کند."
+            ),
+            "نیروی انسانی": (
+                "کار این صفحه: گروه‌ها/منابع نیروی انسانی و ظرفیت کلی آن‌ها را ثبت یا اصلاح کن. "
+                "ضریب نیروی لازم برای اجرای هر فعالیت را در «۴ | برآورد هزینه و نیاز هر فعالیت» تعریف کن. "
+                "این صفحه جای ثبت کارکرد روزانه نفرات یا حضور و غیاب نیست."
+            ),
+            "مصالح": (
+                "کار این صفحه: موجودی، واحد، بهای واحد و اطلاعات تأمین مصالح را کنترل کن. "
+                "مصرف موردنیاز هر فعالیت را در «۴ | برآورد هزینه و نیاز هر فعالیت» تعریف کن. "
+                "کمبود فقط وقتی قابل اتکاست که مقدار موجودی و تأمین دوره‌ای به‌روز باشد."
+            ),
+        }
+        help_notice = QLabel(help_text.get(category, "اطلاعات کلی منابع و تأمین را در این صفحه مدیریت کن."))
+        help_notice.setWordWrap(True)
+        help_notice.setStyleSheet(
+            "background:#EEF4F8;color:#29445A;border:1px solid #D5E2EA;border-radius:6px;padding:8px 10px;"
+        )
+        self.layout().insertWidget(1, help_notice)
 
     def _dialog(self, title, initial=None):
         initial = dict(initial or {})
@@ -1339,6 +1362,15 @@ class RiskPage(RecordPage):
             RISK_FIELDS,
             "risk",
         )
+        help_notice = QLabel(
+            "اینجا ریسک‌های پروژه و اقدام پیشنهادی را ثبت کن؛ برای هر ریسک احتمال، اثر، کنترل موجود و اقدام لازم را وارد کن. "
+            "این بخش فعلاً گردش کامل مسئول اقدام، مهلت، وضعیت اجرا و تأیید بسته‌شدن ریسک را ندارد."
+        )
+        help_notice.setWordWrap(True)
+        help_notice.setStyleSheet(
+            "background:#EEF4F8;color:#29445A;border:1px solid #D5E2EA;border-radius:6px;padding:8px 10px;"
+        )
+        self.layout().insertWidget(1, help_notice)
 
     def prepare_values(self, values):
         values["score"] = values["probability"] * values["impact"] * values["control"]
@@ -1364,10 +1396,12 @@ class ActivityCostResourcePage(QWidget):
         title.setStyleSheet(f"font-size:21px;font-weight:700;color:{TEXT};")
         root.addWidget(title)
         note = QLabel(
-            "هزینه پایه را یک‌بار به ازای واحد خروجی فعالیت تعریف کنید؛ مبلغ کل = ضریب مصرف × بهای واحد × حجم فعالیت. "
-            "اگر واحد فعالیت متر است اما بهای آیتم به‌ازای هر اسلب است، واحد آیتم را «اسلب» و ضریب را تعداد اسلب به‌ازای هر متر وارد کنید. "
-            "نیروی انسانی و ماشین‌آلات بر مبنای اوج تولید روزانه کنترل می‌شوند؛ مصرف مصالح در دوره جمع می‌شود. "
-            "هزینه پیش‌بینی‌نشده جداگانه در دفتر مالی واقعی ثبت می‌شود."
+            "این صفحه برای «برآورد قبل از اجرا» است، نه ثبت عملکرد واقعی و نه ثبت موجودی انبار. "
+            "ابتدا فعالیت را انتخاب کن؛ سپس ریزهزینه پایه و ضریب مصرف منابع به‌ازای یک واحد خروجی را تعریف کن. "
+            "هزینه کل پایه = ضریب مصرف × بهای واحد × حجم فعالیت. "
+            "برای مثال، اگر فعالیت متر است و آیتم به‌ازای هر اسلب قیمت دارد، واحد آیتم را «اسلب» و ضریب را تعداد اسلب به‌ازای هر متر بگذار. "
+            "نیاز هر فعالیت اینجا تعریف می‌شود؛ موجودی/ظرفیت کلی را در منوهای ۵ تا ۷ نگه دار. "
+            "هزینه اضافی یا پیش‌بینی‌نشده را در «۳ | کنترل مالی» ثبت کن."
         )
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{MUTED};")
@@ -1802,6 +1836,16 @@ class FinancePage(QWidget):
         title = QLabel("درآمد و هزینه")
         title.setStyleSheet(f"font-size:21px;font-weight:700;color:{TEXT};")
         layout.addWidget(title)
+        finance_help = QLabel(
+            "این صفحه برای دیدن ارقام مرجع Excel، بررسی پوشش هزینه و ثبت درآمد واقعی یا هزینه اضافه/پیش‌بینی‌نشده است. "
+            "هزینه پایه عادی را اینجا ردیف‌به‌ردیف ثبت نکن؛ آن را در «۴ | برآورد هزینه و نیاز هر فعالیت» تعریف کن. "
+            "ارقام مرجع Excel و دفتر مالی دستی دو منبع جدا هستند و الزاماً یکسان یا کامل نیستند."
+        )
+        finance_help.setWordWrap(True)
+        finance_help.setStyleSheet(
+            "background:#EEF4F8;color:#29445A;border:1px solid #D5E2EA;border-radius:6px;padding:8px 10px;"
+        )
+        layout.addWidget(finance_help)
 
         self.summary = QLabel()
         self.summary.setWordWrap(True)
