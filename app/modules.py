@@ -8,6 +8,7 @@ from pathlib import Path
 from openpyxl.utils.exceptions import InvalidFileException
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCompleter,
     QComboBox,
     QAbstractItemView,
     QDialog,
@@ -1414,6 +1415,10 @@ class ActivityCostResourcePage(QWidget):
         selector_row.addWidget(QLabel("فعالیت:"))
         self.activity_selector = QComboBox()
         self.activity_selector.setMinimumWidth(430)
+        self.activity_selector.setEditable(True)
+        self.activity_selector.setInsertPolicy(QComboBox.NoInsert)
+        self.activity_selector.completer().setFilterMode(Qt.MatchContains)
+        self.activity_selector.completer().setCaseSensitivity(Qt.CaseInsensitive)
         selector_row.addWidget(self.activity_selector, 1)
         self.activity_info = QLabel()
         self.activity_info.setWordWrap(True)
@@ -2107,6 +2112,10 @@ class FinancePage(QWidget):
                 prefix = f"{activity['row_no']} - " if activity["row_no"] is not None else ""
                 suffix = f" ({activity['zone']})" if activity["zone"] else ""
                 selector.addItem(f"{prefix}{activity['title'] or 'فعالیت'}{suffix}", activity["id"])
+            selector.setEditable(True)
+            selector.setInsertPolicy(QComboBox.NoInsert)
+            selector.completer().setFilterMode(Qt.MatchContains)
+            selector.completer().setCaseSensitivity(Qt.CaseInsensitive)
             index = selector.findData(entry["activity_id"])
             selector.setCurrentIndex(index if index >= 0 else 0)
             self.allocations_table.setCellWidget(row_index, 4, selector)
