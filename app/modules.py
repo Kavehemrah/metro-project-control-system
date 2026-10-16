@@ -1750,52 +1750,120 @@ class ActivityCostResourcePage(QWidget):
             return None
         conn = connect()
         try:
-            resource_records = conn.execute(
-                """
-                SELECT id,category,title,unit FROM resource
-                WHERE project_id=? ORDER BY category,title
-                """,
-                (self.project_id,),
-            ).fetchall()
+            resource_records = [
+                dict(row) for row in conn.execute(
+                    """
+                    SELECT id,category,title,unit,supply_type FROM resource
+                    WHERE project_id=? ORDER BY category,title
+                    """,
+                    (self.project_id,),
+                ).fetchall()
+            ]
         finally:
             conn.close()
         if not resource_records:
             QMessageBox.information(
-                self, "تعریف منبع", "ابتدا ماشین‌آلات، نیروی انسانی و مصالح را در صفحه منابع تعریف یا از Excel وارد کنید."
+                self, "تعریف منبع", "ابتدا منابع را از Excel وارد یا در منوهای ۵ تا ۷ تعریف کنید."
             )
             return None
-        choices = []
-        for item in resource_records:
-            label = f"{item['category'] or 'منبع'} — {item['title'] or 'بدون عنوان'}"
-            if item["unit"]:
-                label += f" ({item['unit']})"
-            choices.append((item["id"], label))
-        fields = [
-            ("resource_id", "منبع", "resource", {"choices": choices}),
-            ("quantity_per_activity_unit", "نیاز به ازای یک واحد فعالیت", "number", {"minimum": 0, "decimals": 4}),
-            ("notes", "توضیحات", "text", {}),
-        ]
-        dialog = RecordDialog(
-            "ویرایش ضریب مصرف منبع" if existing else "تعریف نیاز منبع برای واحد فعالیت",
-            fields,
-            dict(existing or {}),
-            self,
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("ویرایش نیاز منبع فعالیت" if existing else "افزودن نیاز منبع به فعالیت")
+        dialog.setLayoutDirection(Qt.RightToLeft)
+        dialog.resize(620, 300)
+        root = QVBoxLayout(dialog)
+        form = QFormLayout()
+        category_selector = QComboBox()
+        category_selector.addItem("همه دسته‌ها", "ALL")
+        for category_name in ("ماشین‌آلات", "نیروی انسانی", "مصالح"):
+            category_selector.addItem(category_name, category_name)
+        category_selector.addItem("سایر منابع", "OTHER")
+        resource_selector = QComboBox()
+        resource_selector.setEditable(True)
+        resource_selector.setInsertPolicy(QComboBox.NoInsert)
+        resource_selector.setMinimumWidth(360)
+        resource_selector.completer().setFilterMode(Qt.MatchContains)
+        resource_selector.completer().setCaseSensitivity(Qt.CaseInsensitive)
+        coefficient = QDoubleSpinBox()
+        coefficient.setRange(0, 1_000_000_000)
+        coefficient.setDecimals(4)
+        coefficient.setValue(float((existing or {}).get("quantity_per_activity_unit") or 0))
+        notes = QLineEdit(str((existing or {}).get("notes") or ""))
+
+        form.addRow("فیلتر دسته منبع", category_selector)
+        form.addRow("منبع (قابل جست‌وجو)", resource_selector)
+        form.addRow("نیاز به ازای یک واحد فعالیت", coefficient)
+        form.addRow("توضیحات", notes)
+        root.addLayout(form)
+
+        def category_matches(record, selected_category):
+            if selected_category == "ALL":
+                return True
+            if selected_category == "OTHER":
+                return record["category"] not in ("ماشین‌آلات", "نیروی انسانی", "مصالح")
+            return record["category"] == selected_category
+
+        def populate_resource_choices():
+            previous_id = resource_selector.currentData()
+            if previous_id is None and existing:
+                previous_id = existing.get("resource_id")
+            selected_category = category_selector.currentData()
+            filtered = [
+                record for record in resource_records
+                if category_matches(record, selected_category)
+            ]
+            resource_selector.blockSignals(True)
+            resource_selector.clear()
+            resource_selector.addItem("انتخاب منبع", None)
+            for record in filtered:
+                parts = []
+                if selected_category in (None, "ALL", "OTHER"):
+                    parts.append(record["category"] or "سایر منابع")
+                parts.append(record["title"] or "بدون عنوان")
+                if record["unit"]:
+                    parts.append(f"({record['unit']})")
+                if record.get("supply_type"):
+                    parts.append(f"— {record['supply_type']}")
+                resource_selector.addItem(" ".join(parts), record["id"])
+            idx = resource_selector.findData(previous_id)
+            resource_selector.setCurrentIndex(idx if idx >= 0 else 0)
+            resource_selector.blockSignals(False)
+
+        initial_category = (existing or {}).get("category")
+        category_index = category_selector.findData(
+            initial_category if initial_category in ("ماشین‌آلات", "نیروی انسانی", "مصالح") else "ALL"
         )
+        category_selector.setCurrentIndex(category_index if category_index >= 0 else 0)
+        category_selector.currentIndexChanged.connect(populate_resource_choices)
+        populate_resource_choices()
+        if existing and existing.get("resource_id") is not None:
+            resource_index = resource_selector.findData(existing["resource_id"])
+            if resource_index >= 0:
+                resource_selector.setCurrentIndex(resource_index)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        root.addWidget(buttons)
         if dialog.exec() != QDialog.Accepted:
             return None
-        values = dialog.values()
-        if values["resource_id"] is None:
-            QMessageBox.warning(self, "انتخاب منبع", "یک منبع معتبر انتخاب کنید.")
+
+        resource_id = resource_selector.currentData()
+        if resource_id is None:
+            QMessageBox.warning(dialog, "انتخاب منبع", "یک منبع معتبر از فهرست انتخاب کنید.")
             return None
-        source = next((r for r in resource_records if r["id"] == values["resource_id"]), None)
+        source = next((record for record in resource_records if record["id"] == resource_id), None)
         if source is None:
-            QMessageBox.warning(self, "منبع نامعتبر", "منبع انتخاب‌شده پیدا نشد.")
+            QMessageBox.warning(dialog, "منبع نامعتبر", "منبع انتخاب‌شده پیدا نشد.")
             return None
-        values.update(
-            category=source["category"] or "سایر",
-            resource_title=source["title"] or "منبع",
-            unit=source["unit"],
-        )
+        values = {
+            "resource_id": resource_id,
+            "quantity_per_activity_unit": coefficient.value(),
+            "notes": notes.text().strip(),
+            "category": source["category"] or "سایر",
+            "resource_title": source["title"] or "منبع",
+            "unit": source["unit"],
+        }
         return values, activity
 
     def _selected_requirement(self):
