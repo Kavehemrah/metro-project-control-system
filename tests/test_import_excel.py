@@ -1,6 +1,8 @@
 from pathlib import Path
 import math
 import sqlite3
+import subprocess
+import sys
 
 from openpyxl import load_workbook
 
@@ -40,7 +42,19 @@ def test_workbook_import_includes_resource_sheets(tmp_path):
     conn = connect(db_path)
     conn.close()
 
-    import_workbook(str(workbook), db_path=db_path)
+    import_report = import_workbook(str(workbook), db_path=db_path)
+    warning_by_title = {
+        warning["title"]: warning["detail"]
+        for warning in import_report["warnings"]
+    }
+    assert "ردیف تفصیلی متناظر با مغایرت خلاصه" in warning_by_title
+    assert "ردیف 27" in warning_by_title["ردیف تفصیلی متناظر با مغایرت خلاصه"]
+    assert "سایر (انواع لوله، سیم آرماتور و ...)" in warning_by_title[
+        "ردیف تفصیلی متناظر با مغایرت خلاصه"
+    ]
+    assert "اقلام مبلغ‌دار خارج از بازه فرمول جمع تفصیلی" in warning_by_title
+    omitted_costs = warning_by_title["اقلام مبلغ‌دار خارج از بازه فرمول جمع تفصیلی"]
+    assert "M20" in omitted_costs and "ردیف 18" in omitted_costs and "ردیف 19" in omitted_costs
 
     conn = connect(db_path)
     resources = conn.execute("SELECT COUNT(*) FROM resource WHERE project_id=1").fetchone()[0]
@@ -99,7 +113,8 @@ def test_workbook_import_includes_resource_sheets(tmp_path):
     tunnel4_transfer = conn.execute(
         "SELECT title,start_date,finish_date FROM activity WHERE project_id=1 AND row_no=13"
     ).fetchone()
-    revenue_entries = conn.execute("SELECT COUNT(*) FROM revenue_entry WHERE project_id=1").fetchone()[0]
+    revenue_entries = conn.execute("SELECT COUNT(*) FROM revenue_entry WHERE project_id=1 AND source='EXCEL'").fetchone()[0]
+    activity_revenue_entries = conn.execute("SELECT COUNT(*) FROM revenue_entry WHERE project_id=1 AND source='EXCEL_ACTIVITY' AND activity_id IS NOT NULL").fetchone()[0]
     cost_entries = conn.execute("SELECT COUNT(*) FROM cost_entry WHERE project_id=1").fetchone()[0]
     dependencies = conn.execute("SELECT COUNT(*) FROM activity_dependency WHERE project_id=1").fetchone()[0]
     monthly = {
@@ -202,7 +217,8 @@ def test_workbook_import_includes_resource_sheets(tmp_path):
     assert first_risk["consequence"] and first_risk["existing_controls"] == "--"
     assert tunnel4 >= 1, "Tunnel 4 operational activity should be imported"
     assert tuple(tunnel4_transfer) == ("انتقال ریل به دهانه تونل", "2026-09-29", "2026-10-18")
-    assert revenue_entries == 6, "Revenue line items from both months should be imported"
+    assert revenue_entries == 6, "Aggregate revenue line items from both months should be imported"
+    assert activity_revenue_entries > 0, "Physical-progress unit rates should create activity-linked revenue budgets"
     assert cost_entries == 12, "All six cost categories from both months should be imported"
     assert balance_category_entries == 0, "Project balance must not be stored as a cost"
     assert dependencies > 0, "Activity dependencies should be inferred from workbook sequencing"
@@ -551,3 +567,321 @@ def test_daily_actuals_update_forecast_finish_from_observed_productivity(tmp_pat
 
     assert forecast["remaining_qty"] == 80
     assert forecast["forecast_finish"] == "2026-10-10"
+
+
+def test_failed_physical_section_parse_preserves_previous_excel_rows(tmp_path):
+    source = Path(__file__).resolve().parents[1] / "metro-project-control-system.xlsx"
+    altered = tmp_path / "workbook-with-unrecognized-physical-sheets.xlsx"
+    workbook = load_workbook(source)
+    for name in list(workbook.sheetnames):
+        normalized = name.replace("ي", "ی").replace("ك", "ک")
+        if "پیشرفت فیزیکی" in normalized or "پيشرفت فيزيكي" in name:
+            workbook[name].title = f"قدیمی_{len(workbook.sheetnames)}_{name[:20]}"
+    workbook.save(altered)
+    workbook.close()
+
+    db_path = tmp_path / "preserve-physical.db"
+    conn = connect(db_path)
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Existing project')")
+    conn.execute(
+        """
+        INSERT INTO physical_progress_entry(
+            project_id,source_row_no,position,zone,work_package,unit,total_qty,
+            opening_qty,actual_qty,remaining_qty,period,source
+        ) VALUES(1,77,'تونل ۴','خط شرقی','ردیف قبلی','متر',100,20,10,70,'مهر 1405','EXCEL')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    import_workbook(str(altered), db_path=db_path)
+
+    conn = connect(db_path)
+    preserved = conn.execute(
+        "SELECT COUNT(*) FROM physical_progress_entry WHERE project_id=1 AND source_row_no=77 AND source='EXCEL'"
+    ).fetchone()[0]
+    warning = conn.execute(
+        "SELECT COUNT(*) FROM discrepancy WHERE project_id=1 AND source='EXCEL' AND title='ورود پیشرفت فیزیکی Excel انجام نشد'"
+    ).fetchone()[0]
+    conn.close()
+    assert preserved == 1
+    assert warning == 1
+
+
+
+def test_import_workbook_returns_counts_and_import_warnings(tmp_path):
+    workbook = Path(__file__).resolve().parents[1] / "metro-project-control-system.xlsx"
+    report = import_workbook(str(workbook), db_path=tmp_path / "report.db")
+
+    assert report["project"]
+    assert report["activities"] > 0
+    assert report["physical_rows"] > 0
+    assert report["resources"] > 0
+    assert report["resource_periods"] > 0
+    assert report["risks"] > 0
+    assert report["revenue_rows"] > 0
+    assert report["cost_rows"] > 0
+    assert report["activity_revenue_rows"] > 0
+    assert report["unmatched_activity_revenue_rows"] > 0
+    assert report["unmatched_activity_revenue_amount"] > 0
+    assert report["unallocated_excel_revenue_rows"] > 0
+    assert report["unallocated_excel_cost_rows"] > 0
+    assert isinstance(report["warnings"], list)
+    assert any(item["title"] == "خطای فرمول Excel" for item in report["warnings"])
+
+
+
+def test_failed_physical_parse_preserves_activity_actuals_revenue_and_dependencies(tmp_path):
+    source = Path(__file__).resolve().parents[1] / "metro-project-control-system.xlsx"
+    altered = tmp_path / "no-physical-parser.xlsx"
+    workbook = load_workbook(source)
+    for name in list(workbook.sheetnames):
+        normalized = name.replace("ي", "ی").replace("ك", "ک")
+        if "پیشرفت فیزیکی" in normalized or "پيشرفت فيزيكي" in name:
+            workbook[name].title = f"قدیمی_{len(workbook.sheetnames)}_{name[:20]}"
+    workbook.save(altered)
+    workbook.close()
+
+    db_path = tmp_path / "preserve-activity-model.db"
+    conn = connect(db_path)
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Existing project')")
+    first = conn.execute(
+        """
+        INSERT INTO activity(project_id,row_no,position,zone,title,quantity,
+            remaining_qty,actual_qty,baseline_actual_qty,source)
+        VALUES(1,5,'تونل ۴','خط شرقی','فعالیت مرجع اول',100,40,60,60,'EXCEL')
+        """
+    ).lastrowid
+    second = conn.execute(
+        """
+        INSERT INTO activity(project_id,row_no,position,zone,title,quantity,
+            remaining_qty,actual_qty,baseline_actual_qty,source)
+        VALUES(1,6,'تونل ۴','خط شرقی','فعالیت مرجع دوم',200,150,50,50,'EXCEL')
+        """
+    ).lastrowid
+    conn.execute(
+        """
+        INSERT INTO revenue_entry(project_id,activity_id,period,category,amount,source)
+        VALUES(1,?,'بودجه کل فعالیت','درآمد مبنا تست',12345,'EXCEL_ACTIVITY')
+        """,
+        (first,),
+    )
+    conn.execute(
+        """
+        INSERT INTO activity_dependency(
+            project_id,activity_id,predecessor_activity_id,relation_type,lag_days,source
+        ) VALUES(1,?,?,'finish_to_start',0,'INFERRED')
+        """,
+        (second, first),
+    )
+    conn.commit()
+    conn.close()
+
+    import_workbook(str(altered), db_path=db_path)
+
+    conn = connect(db_path)
+    first_after = conn.execute(
+        "SELECT quantity,remaining_qty,actual_qty,baseline_actual_qty FROM activity WHERE id=?",
+        (first,),
+    ).fetchone()
+    revenue_after = conn.execute(
+        "SELECT amount FROM revenue_entry WHERE activity_id=? AND source='EXCEL_ACTIVITY'",
+        (first,),
+    ).fetchone()
+    dependencies_after = conn.execute(
+        "SELECT COUNT(*) FROM activity_dependency WHERE project_id=1 AND source='INFERRED'"
+    ).fetchone()[0]
+    blocked_warning = conn.execute(
+        "SELECT COUNT(*) FROM discrepancy WHERE project_id=1 AND source='EXCEL' "
+        "AND title='به‌روزرسانی فعالیت‌ها متوقف شد'"
+    ).fetchone()[0]
+    conn.close()
+
+    assert tuple(first_after) == (100, 40, 60, 60)
+    assert revenue_after["amount"] == 12345
+    assert dependencies_after == 1
+    assert blocked_warning == 1
+
+
+
+def test_invalid_contract_value_aborts_import_without_mutating_existing_project(tmp_path):
+    import pytest
+    from openpyxl import load_workbook
+
+    source = Path(__file__).resolve().parents[1] / "metro-project-control-system.xlsx"
+    altered = tmp_path / "blank-contract-value.xlsx"
+    workbook = load_workbook(source)
+    workbook["پیشرفت درآمدی پروژه"]["D11"] = None
+    workbook.save(altered)
+    workbook.close()
+
+    db_path = tmp_path / "existing-project.db"
+    conn = connect(db_path)
+    conn.execute(
+        "INSERT INTO project(id,name,contract_value) VALUES(1,'Existing project',987654321)"
+    )
+    conn.execute(
+        """
+        INSERT INTO kpi(project_id,physical_progress,revenue,cost,balance,revenue_progress)
+        VALUES(1,12,34,5,29,8)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(ValueError, match="D11"):
+        import_workbook(str(altered), db_path=db_path)
+
+    conn = connect(db_path)
+    project = conn.execute(
+        "SELECT contract_value FROM project WHERE id=1"
+    ).fetchone()
+    kpi = conn.execute(
+        "SELECT physical_progress,revenue,cost,balance,revenue_progress FROM kpi WHERE project_id=1"
+    ).fetchone()
+    conn.close()
+
+    assert project["contract_value"] == 987654321
+    assert tuple(kpi) == (12, 34, 5, 29, 8)
+
+
+def test_project_metadata_rejects_missing_contract_sheet():
+    import pytest
+    from openpyxl import Workbook
+    from imports.import_excel import _parse_project_metadata
+
+    workbook = Workbook()
+    workbook.active.title = "جلد"
+    workbook["جلد"]["B2"] = "Test project"
+
+    with pytest.raises(ValueError, match="پیشرفت درآمدی پروژه"):
+        _parse_project_metadata(workbook)
+    workbook.close()
+
+
+def test_summary_metrics_reject_missing_critical_kpi():
+    import pytest
+    from openpyxl import Workbook
+    from imports.import_excel import _parse_summary_metrics
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "خلاصه گزارش"
+    sheet["F5"] = 10
+    sheet["F11"] = 20
+    sheet["F20"] = None
+    sheet["F12"] = 30
+
+    with pytest.raises(ValueError, match="F20"):
+        _parse_summary_metrics(workbook)
+    workbook.close()
+
+
+def test_unmatched_activity_revenue_is_quarantined_and_can_be_rebuilt(tmp_path):
+    from app.services.activity_costs import sync_activity_revenue_from_physical
+
+    conn = connect(tmp_path / "unmatched-revenue.db")
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Revenue sync test')")
+    cursor = conn.execute(
+        """
+        INSERT INTO activity(project_id,position,zone,title,quantity,source)
+        VALUES(1,'Tunnel 4','East line','Old activity title',10,'EXCEL')
+        """
+    )
+    activity_id = int(cursor.lastrowid)
+    conn.execute(
+        """
+        INSERT INTO revenue_entry(project_id,activity_id,period,category,amount,source)
+        VALUES(1,?,'بودجه کل فعالیت','Prior activity revenue',12345,'EXCEL_ACTIVITY')
+        """,
+        (activity_id,),
+    )
+
+    old_key = ("tunnel4", "eastline", "oldactivitytitle")
+    new_key = ("tunnel4", "eastline", "renamedactivity")
+    unmatched_item = {
+        "row_no": 17, "position": "Tunnel 4", "zone": "East line",
+        "title": "Renamed activity", "unit_rate": 100, "total": 6,
+    }
+
+    created = sync_activity_revenue_from_physical(
+        conn, {new_key: unmatched_item}, {old_key: activity_id}, project_id=1
+    )
+    quarantined = conn.execute(
+        "SELECT amount,source FROM revenue_entry WHERE project_id=1 AND activity_id=?",
+        (activity_id,),
+    ).fetchone()
+    warning = conn.execute(
+        "SELECT COUNT(*) FROM discrepancy WHERE project_id=1 AND title='درآمد فعالیت نیازمند تطبیق مجدد'"
+    ).fetchone()[0]
+    assert created == 0
+    assert tuple(quarantined) == (12345, "EXCEL_ACTIVITY_UNMATCHED")
+    assert warning == 1
+
+    unmatched = conn.execute(
+        """
+        SELECT source_row_no, source_key, amount, status
+        FROM unmatched_activity_revenue WHERE project_id=1
+        """
+    ).fetchall()
+    assert len(unmatched) == 1
+    assert tuple(unmatched[0]) == (
+        17, '["tunnel4","eastline","renamedactivity"]', 600, "CURRENT"
+    )
+
+    # Importing the same unmatched source row again must update, not duplicate, it.
+    repeated_created = sync_activity_revenue_from_physical(
+        conn, {new_key: unmatched_item}, {old_key: activity_id}, project_id=1
+    )
+    assert repeated_created == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM unmatched_activity_revenue WHERE project_id=1 AND status='CURRENT'"
+    ).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT amount FROM unmatched_activity_revenue WHERE project_id=1 AND status='CURRENT'"
+    ).fetchone()[0] == 600
+
+    matched_item = {**unmatched_item, "title": "Old activity title"}
+    created_again = sync_activity_revenue_from_physical(
+        conn, {old_key: matched_item}, {old_key: activity_id}, project_id=1
+    )
+    active = conn.execute(
+        "SELECT amount,source FROM revenue_entry WHERE project_id=1 AND activity_id=?",
+        (activity_id,),
+    ).fetchall()
+    assert created_again == 1
+    assert len(active) == 1
+    assert tuple(active[0]) == (600, "EXCEL_ACTIVITY")
+    conn.close()
+
+
+def test_excel_validation_script_cli_runs_from_repository_root():
+    repository_root = Path(__file__).resolve().parents[1]
+    script_path = repository_root / "scripts" / "validate_excel_import.py"
+    result = subprocess.run(
+        [sys.executable, str(script_path), "--help"],
+        cwd=repository_root,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Validate the real Excel workbook" in result.stdout
+
+def test_finance_diagnostic_script_cli_runs_from_repository_root():
+    repository_root = Path(__file__).resolve().parents[1]
+    script_path = repository_root / "scripts" / "diagnose_finance_reconciliation.py"
+    result = subprocess.run(
+        [sys.executable, str(script_path), "--help"],
+        cwd=repository_root,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Read-only source-sheet diagnostics" in result.stdout
+

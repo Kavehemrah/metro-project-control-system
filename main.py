@@ -15,6 +15,7 @@ from app.theme import NAV, apply_theme
 from app.ui import Dashboard
 from app.modules import (
     ActivityPage,
+    ActivityCostResourcePage,
     FinancePage,
     ReportsPage,
     ResourcePage,
@@ -62,16 +63,17 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(side, 1)
         side.addItems(
             [
-                "داشبورد مدیریتی",
-                "برنامه اجرایی",
-                "پیشرفت فیزیکی",
-                "درآمد و هزینه",
-                "منابع و ماشین‌آلات",
-                "نیروی انسانی",
-                "مصالح و انبار",
-                "ریسک و اقدامات اصلاحی",
-                "گزارش‌ها",
-                "تنظیمات",
+                "۰ | داشبورد",
+                "۱ | برنامه اجرایی",
+                "۲ | عملکرد روزانه",
+                "۳ | کنترل مالی",
+                "۴ | برآورد فعالیت",
+                "۵ | ماشین‌آلات",
+                "۶ | نیروی انسانی",
+                "۷ | مصالح و انبار",
+                "۸ | ریسک‌ها",
+                "۹ | گزارش‌ها",
+                "۱۰ | تنظیمات و Excel",
             ]
         )
 
@@ -82,6 +84,7 @@ class MainWindow(QMainWindow):
         stack.addWidget(ActivityPage("برنامه اجرایی"))
         stack.addWidget(ActivityPage("پیشرفت فیزیکی", progress_only=True))
         stack.addWidget(FinancePage())
+        stack.addWidget(ActivityCostResourcePage())
         stack.addWidget(ResourcePage("منابع و ماشین‌آلات", "ماشین‌آلات"))
         stack.addWidget(ResourcePage("نیروی انسانی", "نیروی انسانی"))
         stack.addWidget(ResourcePage("مصالح و انبار", "مصالح"))

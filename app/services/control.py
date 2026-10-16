@@ -272,6 +272,53 @@ def forecast_finish(
     return (start or date.today()) + timedelta(days=days - 1)
 
 
+
+def project_progress_summary(conn: sqlite3.Connection, project_id: int = 1) -> dict:
+    """Calculate a live, revenue-weighted activity progress indicator.
+
+    Activity quantities can use incompatible units (metres, pieces, cubic metres,
+    etc.), so they must not be summed into a project-wide physical quantity.
+    This indicator weights each activity's progress by its Excel-derived
+    activity revenue basis and reports how many activities have such a basis.
+    It is a management proxy, not a substitute for the workbook's certified KPI.
+    """
+    activities = conn.execute(
+        "SELECT id FROM activity WHERE project_id=? ORDER BY row_no, id",
+        (project_id,),
+    ).fetchall()
+    weights = {
+        int(row["activity_id"]): float(row["basis"] or 0)
+        for row in conn.execute(
+            """
+            SELECT activity_id, SUM(amount) AS basis
+            FROM revenue_entry
+            WHERE project_id=? AND source='EXCEL_ACTIVITY' AND activity_id IS NOT NULL
+            GROUP BY activity_id
+            """,
+            (project_id,),
+        ).fetchall()
+    }
+    weighted_total = 0.0
+    basis_total = 0.0
+    weighted_count = 0
+    for activity in activities:
+        basis = weights.get(int(activity["id"]), 0.0)
+        if basis <= 0:
+            continue
+        control = activity_control(conn, int(activity["id"]))
+        progress = min(100.0, max(0.0, float(control["physical_progress_pct"] or 0)))
+        weighted_total += basis * progress / 100.0
+        basis_total += basis
+        weighted_count += 1
+
+    return {
+        "progress_pct": weighted_total / basis_total * 100.0 if basis_total else None,
+        "basis_total": basis_total,
+        "activity_count": len(activities),
+        "weighted_activity_count": weighted_count,
+        "coverage_pct": weighted_count / len(activities) * 100.0 if activities else 0.0,
+    }
+
 def aggregate_activity_control(conn: sqlite3.Connection, project_id: int = 1) -> list[dict]:
     rows = conn.execute(
         "SELECT id, title, zone, quantity, unit, status FROM activity "
