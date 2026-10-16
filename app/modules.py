@@ -1929,13 +1929,34 @@ class FinancePage(QWidget):
         self.coverage_summary.setStyleSheet(f"font-size:14px;color:{BLUE};")
         layout.addWidget(self.coverage_summary)
 
+        self.finance_tabs = QTabWidget()
+        self.finance_tabs.setDocumentMode(True)
+        coverage_page = QWidget()
+        coverage_layout = QVBoxLayout(coverage_page)
+        coverage_layout.setContentsMargins(10, 10, 10, 10)
+        coverage_layout.addWidget(QLabel("بودجه، پیشرفت و هزینه ثبت‌شده هر فعالیت"))
+        actual_page = QWidget()
+        actual_layout = QVBoxLayout(actual_page)
+        actual_layout.setContentsMargins(10, 10, 10, 10)
+        monthly_page = QWidget()
+        monthly_layout = QVBoxLayout(monthly_page)
+        monthly_layout.setContentsMargins(10, 10, 10, 10)
+        allocation_page = QWidget()
+        allocation_layout = QVBoxLayout(allocation_page)
+        allocation_layout.setContentsMargins(10, 10, 10, 10)
+        self.finance_tabs.addTab(coverage_page, "پوشش هزینه فعالیت‌ها")
+        self.finance_tabs.addTab(actual_page, "دفتر مالی واقعی")
+        self.finance_tabs.addTab(monthly_page, "خلاصه دوره‌ای")
+        self.finance_tabs.addTab(allocation_page, "تخصیص به فعالیت")
+        layout.addWidget(self.finance_tabs, 1)
+
         cost_coverage_title = QLabel("پوشش هزینه در سطح فعالیت")
         cost_coverage_title.setStyleSheet(f"font-size:17px;font-weight:600;color:{TEXT};")
-        layout.addWidget(cost_coverage_title)
+        coverage_layout.addWidget(cost_coverage_title)
         cost_coverage_note = QLabel("هزینه واقعی ثبت‌شده فقط شامل رکوردهای دفتر واقعی است؛ فعالیت بدون بودجه پایه نیازمند تکمیل برآورد است.")
         cost_coverage_note.setWordWrap(True)
         cost_coverage_note.setStyleSheet(f"color:{MUTED};")
-        layout.addWidget(cost_coverage_note)
+        coverage_layout.addWidget(cost_coverage_note)
         self.cost_coverage_table = QTableWidget()
         _configure_table(
             self.cost_coverage_table,
@@ -1945,21 +1966,21 @@ class FinancePage(QWidget):
                 "هزینه پیش‌بینی‌نشده (ریال)", "برآورد قابل ارزیابی (ریال)",
             ],
         )
-        layout.addWidget(self.cost_coverage_table)
+        coverage_layout.addWidget(self.cost_coverage_table, 1)
 
         actual_title = QLabel("دفتر درآمد و هزینه واقعی")
         actual_title.setStyleSheet(f"font-size:17px;font-weight:600;color:{TEXT};")
-        layout.addWidget(actual_title)
+        actual_layout.addWidget(actual_title)
         actual_note = QLabel("دفتر واقعی برای درآمد ثبت‌شده و هزینه‌های اضافی/پیش‌بینی‌نشده است؛ هزینه پایه در برآورد فعالیت تعریف می‌شود.")
         actual_note.setWordWrap(True)
         actual_note.setStyleSheet(f"color:{MUTED};")
-        layout.addWidget(actual_note)
+        actual_layout.addWidget(actual_note)
         self.actual_table = QTableWidget()
         _configure_table(
             self.actual_table,
             ["تاریخ", "دوره", "نوع", "شرح", "مبلغ (ریال)", "پیش‌بینی‌نشده", "فعالیت مرتبط", "توضیحات"],
         )
-        layout.addWidget(self.actual_table)
+        actual_layout.addWidget(self.actual_table, 1)
         actual_actions = QHBoxLayout()
         self.add_actual_button = QPushButton("ثبت هزینه/درآمد اضافی یا پیش‌بینی‌نشده")
         self.edit_actual_button = QPushButton("ویرایش رکورد واقعی")
@@ -1967,34 +1988,35 @@ class FinancePage(QWidget):
         for button in (self.add_actual_button, self.edit_actual_button, self.delete_actual_button):
             actual_actions.addWidget(button)
         actual_actions.addStretch()
-        layout.addLayout(actual_actions)
+        actual_layout.addLayout(actual_actions)
         self.add_actual_button.clicked.connect(self.add_actual_entry)
         self.edit_actual_button.clicked.connect(self.edit_actual_entry)
         self.delete_actual_button.clicked.connect(self.delete_actual_entry)
 
         self.table = QTableWidget()
         _configure_table(self.table, ["دوره", "درآمد (ریال)", "هزینه (ریال)", "بالانس (ریال)"])
-        layout.addWidget(self.table)
+        monthly_layout.addWidget(QLabel("مبالغ مرجع درآمد و هزینه به تفکیک دوره"))
+        monthly_layout.addWidget(self.table, 1)
         refresh = QPushButton("بروزرسانی")
         refresh.clicked.connect(self.refresh)
-        layout.addWidget(refresh)
+        monthly_layout.addWidget(refresh)
 
         allocation_title = QLabel("تخصیص مبالغ مالی به فعالیت‌ها")
         allocation_title.setStyleSheet(f"font-size:17px;font-weight:600;color:{TEXT};")
-        layout.addWidget(allocation_title)
+        allocation_layout.addWidget(allocation_title)
         allocation_note = QLabel("ردیف‌های مالی Excel خودکار به فعالیت متصل نمی‌شوند؛ تخصیص فعالیت را بررسی و سپس ذخیره کنید.")
         allocation_note.setWordWrap(True)
         allocation_note.setStyleSheet(f"color:{MUTED};")
-        layout.addWidget(allocation_note)
+        allocation_layout.addWidget(allocation_note)
         self.allocations_table = QTableWidget()
         _configure_table(
             self.allocations_table,
             ["نوع", "دوره", "شرح", "مبلغ (ریال)", "فعالیت مرتبط"],
         )
-        layout.addWidget(self.allocations_table)
+        allocation_layout.addWidget(self.allocations_table, 1)
         save_allocations = QPushButton("ذخیره تخصیص‌های مالی")
         save_allocations.clicked.connect(self.save_allocations)
-        layout.addWidget(save_allocations)
+        allocation_layout.addWidget(save_allocations)
         self.refresh()
 
     def refresh(self):
