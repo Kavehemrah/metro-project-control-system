@@ -609,3 +609,76 @@ def test_import_workbook_returns_counts_and_import_warnings(tmp_path):
     assert report["cost_rows"] > 0
     assert isinstance(report["warnings"], list)
     assert any(item["title"] == "خطای فرمول Excel" for item in report["warnings"])
+
+
+
+def test_failed_physical_parse_preserves_activity_actuals_revenue_and_dependencies(tmp_path):
+    source = Path(__file__).resolve().parents[1] / "metro-project-control-system.xlsx"
+    altered = tmp_path / "no-physical-parser.xlsx"
+    workbook = load_workbook(source)
+    for name in list(workbook.sheetnames):
+        normalized = name.replace("ي", "ی").replace("ك", "ک")
+        if "پیشرفت فیزیکی" in normalized or "پيشرفت فيزيكي" in name:
+            workbook[name].title = f"قدیمی_{len(workbook.sheetnames)}_{name[:20]}"
+    workbook.save(altered)
+    workbook.close()
+
+    db_path = tmp_path / "preserve-activity-model.db"
+    conn = connect(db_path)
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Existing project')")
+    first = conn.execute(
+        """
+        INSERT INTO activity(project_id,row_no,position,zone,title,quantity,
+            remaining_qty,actual_qty,baseline_actual_qty,source)
+        VALUES(1,5,'تونل ۴','خط شرقی','فعالیت مرجع اول',100,40,60,60,'EXCEL')
+        """
+    ).lastrowid
+    second = conn.execute(
+        """
+        INSERT INTO activity(project_id,row_no,position,zone,title,quantity,
+            remaining_qty,actual_qty,baseline_actual_qty,source)
+        VALUES(1,6,'تونل ۴','خط شرقی','فعالیت مرجع دوم',200,150,50,50,'EXCEL')
+        """
+    ).lastrowid
+    conn.execute(
+        """
+        INSERT INTO revenue_entry(project_id,activity_id,period,category,amount,source)
+        VALUES(1,?,'بودجه کل فعالیت','درآمد مبنا تست',12345,'EXCEL_ACTIVITY')
+        """,
+        (first,),
+    )
+    conn.execute(
+        """
+        INSERT INTO activity_dependency(
+            project_id,activity_id,predecessor_activity_id,relation_type,lag_days,source
+        ) VALUES(1,?,?,'finish_to_start',0,'INFERRED')
+        """,
+        (second, first),
+    )
+    conn.commit()
+    conn.close()
+
+    import_workbook(str(altered), db_path=db_path)
+
+    conn = connect(db_path)
+    first_after = conn.execute(
+        "SELECT quantity,remaining_qty,actual_qty,baseline_actual_qty FROM activity WHERE id=?",
+        (first,),
+    ).fetchone()
+    revenue_after = conn.execute(
+        "SELECT amount FROM revenue_entry WHERE activity_id=? AND source='EXCEL_ACTIVITY'",
+        (first,),
+    ).fetchone()
+    dependencies_after = conn.execute(
+        "SELECT COUNT(*) FROM activity_dependency WHERE project_id=1 AND source='INFERRED'"
+    ).fetchone()[0]
+    blocked_warning = conn.execute(
+        "SELECT COUNT(*) FROM discrepancy WHERE project_id=1 AND source='EXCEL' "
+        "AND title='به‌روزرسانی فعالیت‌ها متوقف شد'"
+    ).fetchone()[0]
+    conn.close()
+
+    assert tuple(first_after) == (100, 40, 60, 60)
+    assert revenue_after["amount"] == 12345
+    assert dependencies_after == 1
+    assert blocked_warning == 1
