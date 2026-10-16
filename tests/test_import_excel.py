@@ -553,3 +553,42 @@ def test_daily_actuals_update_forecast_finish_from_observed_productivity(tmp_pat
 
     assert forecast["remaining_qty"] == 80
     assert forecast["forecast_finish"] == "2026-10-10"
+
+
+def test_failed_physical_section_parse_preserves_previous_excel_rows(tmp_path):
+    source = Path(__file__).resolve().parents[1] / "metro-project-control-system.xlsx"
+    altered = tmp_path / "workbook-with-unrecognized-physical-sheets.xlsx"
+    workbook = load_workbook(source)
+    for name in list(workbook.sheetnames):
+        normalized = name.replace("ي", "ی").replace("ك", "ک")
+        if "پیشرفت فیزیکی" in normalized or "پيشرفت فيزيكي" in name:
+            workbook[name].title = f"قدیمی_{len(workbook.sheetnames)}_{name[:20]}"
+    workbook.save(altered)
+    workbook.close()
+
+    db_path = tmp_path / "preserve-physical.db"
+    conn = connect(db_path)
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Existing project')")
+    conn.execute(
+        """
+        INSERT INTO physical_progress_entry(
+            project_id,source_row_no,position,zone,work_package,unit,total_qty,
+            opening_qty,actual_qty,remaining_qty,period,source
+        ) VALUES(1,77,'تونل ۴','خط شرقی','ردیف قبلی','متر',100,20,10,70,'مهر 1405','EXCEL')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    import_workbook(str(altered), db_path=db_path)
+
+    conn = connect(db_path)
+    preserved = conn.execute(
+        "SELECT COUNT(*) FROM physical_progress_entry WHERE project_id=1 AND source_row_no=77 AND source='EXCEL'"
+    ).fetchone()[0]
+    warning = conn.execute(
+        "SELECT COUNT(*) FROM discrepancy WHERE project_id=1 AND source='EXCEL' AND title='ورود پیشرفت فیزیکی Excel انجام نشد'"
+    ).fetchone()[0]
+    conn.close()
+    assert preserved == 1
+    assert warning == 1
