@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QPushButton,
     QSpinBox,
+    QScrollArea,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -1388,21 +1390,22 @@ class ActivityCostResourcePage(QWidget):
         super().__init__()
         self.project_id = project_id
         self.setLayoutDirection(Qt.RightToLeft)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(22, 20, 22, 22)
-        root.setSpacing(10)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        content = QWidget()
+        root = QVBoxLayout(content)
+        root.setContentsMargins(16, 12, 16, 16)
+        root.setSpacing(8)
+        outer.addWidget(scroll)
+        scroll.setWidget(content)
 
         title = QLabel("برآورد هزینه و منابع فعالیت")
         title.setStyleSheet(f"font-size:21px;font-weight:700;color:{TEXT};")
         root.addWidget(title)
-        note = QLabel(
-            "این صفحه برای «برآورد قبل از اجرا» است، نه ثبت عملکرد واقعی و نه ثبت موجودی انبار. "
-            "ابتدا فعالیت را انتخاب کن؛ سپس ریزهزینه پایه و ضریب مصرف منابع به‌ازای یک واحد خروجی را تعریف کن. "
-            "هزینه کل پایه = ضریب مصرف × بهای واحد × حجم فعالیت. "
-            "برای مثال، اگر فعالیت متر است و آیتم به‌ازای هر اسلب قیمت دارد، واحد آیتم را «اسلب» و ضریب را تعداد اسلب به‌ازای هر متر بگذار. "
-            "نیاز هر فعالیت اینجا تعریف می‌شود؛ موجودی/ظرفیت کلی را در منوهای ۵ تا ۷ نگه دار. "
-            "هزینه اضافی یا پیش‌بینی‌نشده را در «۳ | کنترل مالی» ثبت کن."
-        )
+        note = QLabel("برآورد پیش از اجرا: هزینه پایه و ضریب نیاز هر فعالیت را اینجا تعریف کنید؛ موجودی و ظرفیت کلی در منوهای منابع ثبت می‌شود.")
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{MUTED};")
         root.addWidget(note)
@@ -1442,13 +1445,27 @@ class ActivityCostResourcePage(QWidget):
         resource_title = QLabel("نیاز منابع بر اساس مقدار برنامه فعالیت")
         resource_title.setStyleSheet(f"font-size:16px;font-weight:600;color:{TEXT};")
         root.addWidget(resource_title)
+        self.resource_category = QComboBox()
+        self.resource_category.addItem("همه منابع", "ALL")
+        self.resource_category.addItem("ماشین‌آلات", "ماشین‌آلات")
+        self.resource_category.addItem("نیروی انسانی", "نیروی انسانی")
+        self.resource_category.addItem("مصالح", "مصالح")
+        self.resource_category.addItem("سایر منابع", "OTHER")
+        category_row = QHBoxLayout()
+        category_row.addWidget(QLabel("نمایش دسته:"))
+        category_row.addWidget(self.resource_category)
+        category_row.addStretch()
+        root.addLayout(category_row)
+        self.resource_tabs = QTabWidget()
+        self.resource_tabs.setDocumentMode(True)
         self.resource_table = QTableWidget()
         _configure_table(
             self.resource_table,
             ["دوره", "دسته", "منبع", "واحد منبع", "ضریب به ازای واحد فعالیت", "مقدار خروجی مبنا", "نیاز منبع", "موجود", "کمبود", "هزینه تخمینی کمبود (ریال)"],
         )
-        self.resource_table.setMinimumHeight(170)
-        root.addWidget(self.resource_table, 2)
+        self.resource_table.setMinimumHeight(240)
+        self.resource_tabs.addTab(self.resource_table, "نیاز منابع")
+        root.addWidget(self.resource_tabs, 3)
         resource_actions = QHBoxLayout()
         self.add_requirement_button = QPushButton("افزودن نیاز منبع")
         self.edit_requirement_button = QPushButton("ویرایش نیاز منبع")
@@ -1462,6 +1479,7 @@ class ActivityCostResourcePage(QWidget):
         self.delete_requirement_button.clicked.connect(self.delete_requirement)
 
         self.activity_selector.currentIndexChanged.connect(self.refresh)
+        self.resource_category.currentIndexChanged.connect(self._apply_resource_filter)
         self.refresh()
 
     def _selected_activity(self):
@@ -1548,6 +1566,8 @@ class ActivityCostResourcePage(QWidget):
                 self.cost_table.setItem(row_index, column, cell)
         self.cost_table.resizeColumnsToContents()
 
+        self._all_resource_rows = resource_rows
+        self._apply_resource_filter()
         self.resource_table.setRowCount(len(resource_rows))
         for row_index, item in enumerate(resource_rows):
             available = item["available_qty"]
@@ -1557,6 +1577,38 @@ class ActivityCostResourcePage(QWidget):
                 item["period"],
                 item["category"],
                 item["resource_title"],
+                item["unit"] or item["resource_unit"] or "",
+                f"{float(item['quantity_per_activity_unit'] or 0):,.4f}",
+                f"{float(item['planned_activity_qty'] or 0):,.2f}",
+                f"{float(item['required_qty'] or 0):,.2f}",
+                f"{available:,.2f}" if available is not None else "نامشخص",
+                f"{shortage:,.2f}" if shortage is not None else "نامشخص",
+                f"{shortage_cost:,.0f}" if shortage_cost is not None else "نامشخص",
+            ]
+            for column, value in enumerate(values):
+                cell = QTableWidgetItem(str(value))
+                if column == 0:
+                    cell.setData(Qt.UserRole, item["id"])
+                self.resource_table.setItem(row_index, column, cell)
+        self.resource_table.resizeColumnsToContents()
+
+    def _apply_resource_filter(self):
+        rows = getattr(self, "_all_resource_rows", [])
+        if not hasattr(self, "resource_category"):
+            return
+        category = self.resource_category.currentData()
+        if category == "ALL":
+            visible = rows
+        elif category == "OTHER":
+            visible = [row for row in rows if row.get("category") not in ("ماشین‌آلات", "نیروی انسانی", "مصالح")]
+        else:
+            visible = [row for row in rows if row.get("category") == category]
+        # Re-render only the filtered resource rows; source data and calculations remain unchanged.
+        self.resource_table.setRowCount(len(visible))
+        for row_index, item in enumerate(visible):
+            available, shortage, shortage_cost = item["available_qty"], item["shortage_qty"], item["shortage_cost"]
+            values = [
+                item["period"], item["category"], item["resource_title"],
                 item["unit"] or item["resource_unit"] or "",
                 f"{float(item['quantity_per_activity_unit'] or 0):,.4f}",
                 f"{float(item['planned_activity_qty'] or 0):,.2f}",
@@ -1832,15 +1884,21 @@ class FinancePage(QWidget):
     def __init__(self):
         super().__init__()
         self.setLayoutDirection(Qt.RightToLeft)
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(16, 12, 16, 16)
+        layout.setSpacing(8)
+        outer.addWidget(scroll)
+        scroll.setWidget(content)
         title = QLabel("درآمد و هزینه")
         title.setStyleSheet(f"font-size:21px;font-weight:700;color:{TEXT};")
         layout.addWidget(title)
-        finance_help = QLabel(
-            "این صفحه برای دیدن ارقام مرجع Excel، بررسی پوشش هزینه و ثبت درآمد واقعی یا هزینه اضافه/پیش‌بینی‌نشده است. "
-            "هزینه پایه عادی را اینجا ردیف‌به‌ردیف ثبت نکن؛ آن را در «۴ | برآورد هزینه و نیاز هر فعالیت» تعریف کن. "
-            "ارقام مرجع Excel و دفتر مالی دستی دو منبع جدا هستند و الزاماً یکسان یا کامل نیستند."
-        )
+        finance_help = QLabel("نمای کلی مالی، کنترل هزینه فعالیت‌ها، دفتر مالی واقعی و تخصیص درآمد/هزینه؛ داده مرجع Excel و ثبت دستی جدا هستند.")
         finance_help.setWordWrap(True)
         finance_help.setStyleSheet(
             "background:#EEF4F8;color:#29445A;border:1px solid #D5E2EA;border-radius:6px;padding:8px 10px;"
@@ -1868,11 +1926,7 @@ class FinancePage(QWidget):
         cost_coverage_title = QLabel("پوشش هزینه در سطح فعالیت")
         cost_coverage_title.setStyleSheet(f"font-size:17px;font-weight:600;color:{TEXT};")
         layout.addWidget(cost_coverage_title)
-        cost_coverage_note = QLabel(
-            "بودجه پایه از ریزهزینه واحدمحور یا بودجه هزینه تخصیص‌یافته می‌آید. "
-            "«هزینه واقعی ثبت‌شده» فقط جمع رکوردهای دفتر واقعی است و لزوماً کل هزینه مصرف‌شده پروژه نیست. "
-            "فعالیت فاقد بودجه پایه در برآورد هزینه فعالیتی نهایی نمی‌شود و باید تکمیل یا تعیین تکلیف شود."
-        )
+        cost_coverage_note = QLabel("هزینه واقعی ثبت‌شده فقط شامل رکوردهای دفتر واقعی است؛ فعالیت بدون بودجه پایه نیازمند تکمیل برآورد است.")
         cost_coverage_note.setWordWrap(True)
         cost_coverage_note.setStyleSheet(f"color:{MUTED};")
         layout.addWidget(cost_coverage_note)
@@ -1890,12 +1944,7 @@ class FinancePage(QWidget):
         actual_title = QLabel("دفتر درآمد و هزینه واقعی")
         actual_title.setStyleSheet(f"font-size:17px;font-weight:600;color:{TEXT};")
         layout.addWidget(actual_title)
-        actual_note = QLabel(
-            "ثبت روزانه هزینه‌های عادی لازم نیست. ریز هزینه پایه هر فعالیت را در صفحه «برآورد هزینه و منابع فعالیت» تعریف کنید؛ "
-            "این دفتر برای هزینه‌های اضافه/پیش‌بینی‌نشده (مثل لودر اضافی)، درآمد واقعی و ثبت‌های واقعی تجمیعی است. "
-            "برآورد هزینه پایه از ریزهزینه واحدمحور می‌آید و به ثبت روزانه هزینه‌های عادی نیاز ندارد؛ "
-            "شاخص‌های وابسته به هزینه واقعی جامع تا زمان تکمیل داده‌ها نمایش داده نمی‌شوند."
-        )
+        actual_note = QLabel("دفتر واقعی برای درآمد ثبت‌شده و هزینه‌های اضافی/پیش‌بینی‌نشده است؛ هزینه پایه در برآورد فعالیت تعریف می‌شود.")
         actual_note.setWordWrap(True)
         actual_note.setStyleSheet(f"color:{MUTED};")
         layout.addWidget(actual_note)
@@ -1927,9 +1976,7 @@ class FinancePage(QWidget):
         allocation_title = QLabel("تخصیص مبالغ مالی به فعالیت‌ها")
         allocation_title.setStyleSheet(f"font-size:17px;font-weight:600;color:{TEXT};")
         layout.addWidget(allocation_title)
-        allocation_note = QLabel(
-            "ردیف‌های Excel به‌صورت خودکار به فعالیت‌ها متصل نمی‌شوند؛ فقط در صورت انتخاب دستی محاسبه پیشرفت‌محور انجام می‌شود."
-        )
+        allocation_note = QLabel("ردیف‌های مالی Excel خودکار به فعالیت متصل نمی‌شوند؛ تخصیص فعالیت را بررسی و سپس ذخیره کنید.")
         allocation_note.setWordWrap(True)
         allocation_note.setStyleSheet(f"color:{MUTED};")
         layout.addWidget(allocation_note)
