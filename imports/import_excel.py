@@ -1214,6 +1214,16 @@ def import_workbook(path, db_path: str | Path | None = None):
             "cost_rows": conn.execute(
                 "SELECT COUNT(*) FROM cost_entry WHERE project_id=1 AND source='EXCEL'"
             ).fetchone()[0],
+            "activity_revenue_rows": conn.execute(
+                "SELECT COUNT(*) FROM revenue_entry WHERE project_id=1 "
+                "AND source='EXCEL_ACTIVITY' AND activity_id IS NOT NULL"
+            ).fetchone()[0],
+            "unallocated_excel_revenue_rows": conn.execute(
+                "SELECT COUNT(*) FROM revenue_entry WHERE project_id=1 AND source='EXCEL' AND activity_id IS NULL"
+            ).fetchone()[0],
+            "unallocated_excel_cost_rows": conn.execute(
+                "SELECT COUNT(*) FROM cost_entry WHERE project_id=1 AND source='EXCEL' AND activity_id IS NULL"
+            ).fetchone()[0],
             "warnings": [
                 {"title": row["title"], "detail": row["detail"], "severity": row["severity"]}
                 for row in conn.execute(
