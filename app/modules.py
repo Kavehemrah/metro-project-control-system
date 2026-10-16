@@ -2462,6 +2462,24 @@ class ReportsPage(QWidget):
                 ["دسته", "شرح ریسک", "پیامد", "کنترل‌های موجود", "احتمال", "اثر", "کنترل", "امتیاز", "اقدام"],
                 "SELECT category,title,consequence,existing_controls,probability,impact,control,score,action FROM risk WHERE project_id=? ORDER BY score DESC",
             ),
+            (
+                "خروجی درآمدهای فعالیتی بدون تطبیق",
+                "unmatched-activity-revenue.csv",
+                ["ردیف Excel", "موقعیت", "جبهه", "شرح فعالیت", "واحد", "بهای واحد (ریال)", "حجم کل", "مبلغ مبنا (ریال)", "وضعیت"],
+                "SELECT source_row_no,position,zone,title,unit,unit_rate,total_qty,amount,status FROM unmatched_activity_revenue WHERE project_id=? AND status='CURRENT' ORDER BY source_row_no",
+            ),
+            (
+                "خروجی هزینه‌های مرجع بدون تخصیص",
+                "unallocated-excel-costs.csv",
+                ["دوره", "شرح هزینه", "مبلغ (ریال)", "منبع"],
+                "SELECT period,category,amount,source FROM cost_entry WHERE project_id=? AND activity_id IS NULL AND source='EXCEL' ORDER BY id",
+            ),
+            (
+                "خروجی مغایرت‌های مالی و داده‌ای",
+                "data-finance-discrepancies.csv",
+                ["عنوان مغایرت", "جزئیات", "شدت", "منبع"],
+                "SELECT title,detail,severity,source FROM discrepancy WHERE project_id=? ORDER BY CASE severity WHEN 'HIGH' THEN 0 WHEN 'MEDIUM' THEN 1 ELSE 2 END,id",
+            ),
         ]:
             button = QPushButton(label)
             button.clicked.connect(
