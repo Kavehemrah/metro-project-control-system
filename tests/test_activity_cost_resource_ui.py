@@ -126,7 +126,8 @@ def test_resource_requirement_dialog_filters_source_resources_by_category(monkey
         assert visible_ids == [machine_id]
         resource_selector.setCurrentIndex(resource_selector.findData(machine_id))
         dialog.findChild(QDoubleSpinBox).setValue(1.75)
-        dialog.findChild(QLineEdit).setText("تست ورود منبع")
+        line_edits = dialog.findChildren(QLineEdit)
+        line_edits[-1].setText("تست ورود منبع")
         return QDialog.Accepted
 
     monkeypatch.setattr(QDialog, "exec", accept_dialog)
