@@ -158,7 +158,15 @@ class Dashboard(QWidget):
             "SELECT * FROM risk WHERE project_id=1 ORDER BY score DESC"
         ).fetchall()
         discrepancies = conn.execute(
-            "SELECT * FROM discrepancy WHERE project_id=1"
+            """
+            SELECT * FROM discrepancy
+            WHERE project_id=1
+            ORDER BY CASE severity
+                WHEN 'HIGH' THEN 0
+                WHEN 'MEDIUM' THEN 1
+                ELSE 2
+            END, id
+            """
         ).fetchall()
         live_progress = project_progress_summary(conn, 1)
         actual_finance = conn.execute(
@@ -402,15 +410,24 @@ class Dashboard(QWidget):
             discrepancy_layout.addWidget(empty)
         else:
             for discrepancy in discrepancies:
-                label = QLabel(f"• {discrepancy['title']}")
-                accent = (
-                    RED if discrepancy["severity"] == "HIGH" else ORANGE
+                severity = str(discrepancy["severity"] or "").upper()
+                accent = RED if severity == "HIGH" else ORANGE
+                title_label = QLabel(
+                    f"• [{severity or 'INFO'}] {discrepancy['title'] or 'مغایرت بدون عنوان'}"
                 )
-                label.setStyleSheet(
-                    f"color:{accent};font-weight:600;"
-                )
-                label.setWordWrap(True)
-                discrepancy_layout.addWidget(label)
+                title_label.setStyleSheet(f"color:{accent};font-weight:700;")
+                title_label.setWordWrap(True)
+                discrepancy_layout.addWidget(title_label)
+
+                detail_text = str(discrepancy["detail"] or "").strip()
+                if detail_text:
+                    detail_label = QLabel(detail_text)
+                    detail_label.setWordWrap(True)
+                    detail_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                    detail_label.setStyleSheet(
+                        f"color:{TEXT};padding-right:14px;padding-bottom:5px;"
+                    )
+                    discrepancy_layout.addWidget(detail_label)
 
         discrepancy_layout.addStretch()
         lower.addWidget(discrepancy_frame, 2)

@@ -2,10 +2,11 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from app.db import connect as db_connect
 import app.modules as modules
+import app.ui as ui
 
 
 def test_activity_cost_resource_page_loads_unit_costs_and_shortages(monkeypatch, tmp_path):
@@ -174,6 +175,56 @@ def test_finance_page_keeps_long_summaries_inside_task_tabs(monkeypatch, tmp_pat
     assert page.coverage_summary.parentWidget() is page.finance_tabs.widget(0)
     assert page.actual_summary.parentWidget() is page.finance_tabs.widget(1)
     assert page.forecast_summary.parentWidget() is page.finance_tabs.widget(2)
+
+    page.close()
+    assert app is not None
+
+
+def test_dashboard_shows_reconciliation_detail_and_prioritizes_high_discrepancies(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db_path = tmp_path / "dashboard-discrepancies.db"
+    conn = db_connect(db_path)
+    conn.execute(
+        "INSERT INTO project(id,name,contract_value,period_label) "
+        "VALUES(1,'Dashboard test',100000,'مهر 1405')"
+    )
+    conn.execute(
+        "INSERT INTO kpi(project_id,physical_progress,revenue,cost,balance,revenue_progress) "
+        "VALUES(1,0.1426,679000,433000,246000,0.15)"
+    )
+    conn.execute(
+        "INSERT INTO discrepancy(project_id,title,detail,severity,source) "
+        "VALUES(1,?,?,?,'EXCEL')",
+        (
+            "مغایرت هزینه خلاصه و جزئیات",
+            "اختلاف 12,326,556,667 ریال بین خلاصه و ریز هزینه‌ها.",
+            "HIGH",
+        ),
+    )
+    conn.execute(
+        "INSERT INTO discrepancy(project_id,title,detail,severity,source) "
+        "VALUES(1,?,?,?,'EXCEL')",
+        ("مورد تطبیق کم‌اهمیت‌تر", "شرح آزمایشی", "MEDIUM"),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(ui, "connect", lambda: db_connect(db_path))
+    page = ui.Dashboard()
+    labels = [label.text() for label in page.findChildren(QLabel)]
+    detailed_label = next(
+        label for label in labels
+        if "اختلاف 12,326,556,667 ریال" in label
+    )
+    assert "مغایرت هزینه خلاصه و جزئیات" in labels[labels.index(detailed_label) - 1]
+    assert "[HIGH]" in labels[labels.index(detailed_label) - 1]
+
+    visible_discrepancy_titles = [
+        label for label in labels
+        if label.startswith("• [") and ("مغایرت هزینه" in label or "کم‌اهمیت‌تر" in label)
+    ]
+    assert visible_discrepancy_titles[0].startswith("• [HIGH]")
+    assert visible_discrepancy_titles[1].startswith("• [MEDIUM]")
 
     page.close()
     assert app is not None
