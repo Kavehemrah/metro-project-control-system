@@ -14,6 +14,13 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+# When invoked as "python scripts/validate_excel_import.py", Python puts the
+# scripts/ directory on sys.path, not the repository root. Add the root before
+# importing the application packages so the documented command works directly.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
 from app.db import connect
 from imports.import_excel import import_workbook
 
@@ -141,7 +148,7 @@ def validate_workbook(workbook: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    default_workbook = Path(__file__).resolve().parents[1] / "metro-project-control-system.xlsx"
+    default_workbook = REPOSITORY_ROOT / "metro-project-control-system.xlsx"
     parser.add_argument(
         "workbook",
         nargs="?",

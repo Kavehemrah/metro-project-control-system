@@ -1,6 +1,8 @@
 from pathlib import Path
 import math
 import sqlite3
+import subprocess
+import sys
 
 from openpyxl import load_workbook
 
@@ -839,3 +841,19 @@ def test_unmatched_activity_revenue_is_quarantined_and_can_be_rebuilt(tmp_path):
     assert len(active) == 1
     assert tuple(active[0]) == (600, "EXCEL_ACTIVITY")
     conn.close()
+
+
+def test_excel_validation_script_cli_runs_from_repository_root():
+    repository_root = Path(__file__).resolve().parents[1]
+    script_path = repository_root / "scripts" / "validate_excel_import.py"
+    result = subprocess.run(
+        [sys.executable, str(script_path), "--help"],
+        cwd=repository_root,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Validate the real Excel workbook" in result.stdout
