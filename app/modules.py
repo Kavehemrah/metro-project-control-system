@@ -1591,6 +1591,7 @@ class ActivityCostResourcePage(QWidget):
                     cell.setData(Qt.UserRole, item["id"])
                 self.resource_table.setItem(row_index, column, cell)
         self.resource_table.resizeColumnsToContents()
+        self._apply_resource_filter()
 
     def _apply_resource_filter(self):
         rows = getattr(self, "_all_resource_rows", [])
