@@ -160,6 +160,14 @@ def finance_performance(conn: sqlite3.Connection, project_id: int = 1) -> dict:
         else:
             revenue_unallocated += amount
 
+    # Keep each unmatched source row as one unallocated revenue budget.
+    unmatched_revenue_budget = conn.execute(
+        "SELECT COALESCE(SUM(amount), 0) FROM unmatched_activity_revenue "
+        "WHERE project_id=? AND status='CURRENT'",
+        (project_id,),
+    ).fetchone()[0]
+    revenue_unallocated += max(0.0, float(unmatched_revenue_budget or 0))
+
     cost_rows = conn.execute(
         """
         SELECT a.id,
