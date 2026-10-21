@@ -55,6 +55,18 @@ def test_workbook_import_includes_resource_sheets(tmp_path):
     assert "اقلام مبلغ‌دار خارج از بازه فرمول جمع تفصیلی" in warning_by_title
     omitted_costs = warning_by_title["اقلام مبلغ‌دار خارج از بازه فرمول جمع تفصیلی"]
     assert "M20" in omitted_costs and "ردیف 18" in omitted_costs and "ردیف 19" in omitted_costs
+    monthly_omissions = [
+        item for item in import_report["warnings"]
+        if item["title"] == "اقلام ماهانه خارج از بازه فرمول جمع تفصیلی"
+    ]
+    assert any(
+        "E28" in item["detail"] and "ردیف 27" in item["detail"]
+        for item in monthly_omissions
+    )
+    assert any(
+        "F28" in item["detail"] and "ردیف 27" in item["detail"]
+        for item in monthly_omissions
+    )
 
     conn = connect(db_path)
     resources = conn.execute("SELECT COUNT(*) FROM resource WHERE project_id=1").fetchone()[0]
