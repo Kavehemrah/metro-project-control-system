@@ -6,6 +6,7 @@ on:
       - kavehemrah-metro-control-fix
       - feature/schedule-finance-resource-forecast
       - feature/actual-finance-eac
+      - feature/activity-cost-resource-planning
   pull_request:
     branches:
       - main
@@ -24,6 +25,10 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements-dev.txt
+      - name: Install Qt runtime libraries for headless UI tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0
       - name: Install development dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Run test suite

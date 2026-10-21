@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -10,6 +11,7 @@ import openpyxl
 from app.db import connect
 from app.services.control import activity_control, detect_finance_discrepancy, scan_formula_errors
 from app.services.forecast import calculate_schedule
+from app.services.activity_costs import sync_activity_revenue_from_physical
 
 
 def _clean_text(value) -> str:
@@ -31,6 +33,44 @@ def _clean_number(value) -> float:
         return float(text)
     except ValueError:
         return 0.0
+
+
+def _required_number(value, field_name: str) -> float:
+    """Parse a required Excel number without silently converting invalid input to zero."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        raise ValueError(f"مقدار ضروری {field_name} خالی است.")
+
+    if isinstance(value, bool):
+        raise ValueError(f"مقدار {field_name} عددی معتبر نیست.")
+
+    if isinstance(value, (int, float)):
+        number = float(value)
+    else:
+        text = _clean_text(value).translate(
+            str.maketrans(
+                "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+                "01234567890123456789",
+            )
+        )
+        text = (
+            text.replace(",", "")
+            .replace("٬", "")
+            .replace("٫", ".")
+            .replace(" ", "")
+            .replace("%", "")
+            .replace("٪", "")
+        )
+        try:
+            number = float(text)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"مقدار {field_name} عددی معتبر نیست: {value!r}"
+            ) from exc
+
+    if not math.isfinite(number):
+        raise ValueError(f"مقدار {field_name} عددی معتبر نیست.")
+
+    return number
 
 
 def _row_text(row) -> str:
@@ -126,38 +166,57 @@ def _summary_month_columns(sheet):
 
 
 def _parse_project_metadata(workbook):
-    candidates = ["جلد"]
-    sheet = next((workbook[name] for name in candidates if name in workbook.sheetnames), None)
-    if sheet is None:
-        return {"name": "پروژه مترو", "period_label": "دوره گزارش"}
-
+    sheet = workbook["جلد"] if "جلد" in workbook.sheetnames else None
     contract_sheet = _find_sheet(workbook, ["پیشرفت درآمدی پروژه"])
-    contract_value = 0.0
-    if contract_sheet is not None:
-        contract_value = _clean_number(contract_sheet["D11"].value)
+    if contract_sheet is None:
+        raise ValueError(
+            "شیت «پیشرفت درآمدی پروژه» پیدا نشد؛ ارزش قرارداد قابل اعتبارسنجی نیست."
+        )
 
+    contract_value = _required_number(
+        contract_sheet["D11"].value,
+        "پیشرفت درآمدی پروژه!D11 (ارزش قرارداد)",
+    )
     return {
-        "name": _clean_text(sheet["B2"].value) or "پروژه مترو",
-        "period_label": _clean_text(sheet["J1"].value) or "دوره گزارش",
+        "name": _clean_text(sheet["B2"].value) if sheet and _clean_text(sheet["B2"].value) else "پروژه مترو",
+        "period_label": _clean_text(sheet["J1"].value) if sheet and _clean_text(sheet["J1"].value) else "دوره گزارش",
         "contract_value": contract_value,
     }
 
 
-def _parse_summary_metrics(workbook):
+def _parse_summary_metrics(workbook, formula_workbook=None):
     if "خلاصه گزارش" not in workbook.sheetnames:
         raise ValueError("Sheet 'خلاصه گزارش' was not found.")
 
     sheet = workbook["خلاصه گزارش"]
+    formula_sheet = (
+        formula_workbook["خلاصه گزارش"]
+        if formula_workbook is not None and "خلاصه گزارش" in formula_workbook.sheetnames
+        else None
+    )
+    unavailable_kpis = []
+
+    def required_summary_number(address, label):
+        value = sheet[address].value
+        formula = formula_sheet[address].value if formula_sheet is not None else None
+        if value is None and isinstance(formula, str) and formula.lstrip().startswith("="):
+            # The workbook contains a formula, but no cached result is available.
+            # Keep the field unknown so import can preserve the prior persisted KPI.
+            unavailable_kpis.append(f"{address} ({label})")
+            return None
+        return _required_number(value, f"خلاصه گزارش!{address} ({label})")
+
     summary = {
-        "physical_progress": _clean_number(sheet["F5"].value),
-        "revenue": _clean_number(sheet["F11"].value),
+        "physical_progress": required_summary_number("F5", "پیشرفت فیزیکی"),
+        "revenue": required_summary_number("F11", "درآمد"),
         "contract_revenue": _clean_number(sheet["F7"].value),
         "adjustment": _clean_number(sheet["F8"].value),
         "adjustment_difference": _clean_number(sheet["F9"].value),
         "other_income": _clean_number(sheet["F10"].value),
-        "cost": _clean_number(sheet["F20"].value),
-        "revenue_progress": _clean_number(sheet["F12"].value),
+        "cost": required_summary_number("F20", "هزینه"),
+        "revenue_progress": required_summary_number("F12", "درصد پیشرفت درآمدی"),
         "monthly_finance": [],
+        "unavailable_kpis": unavailable_kpis,
     }
 
     summary["total_revenue"] = summary["revenue"]
@@ -168,12 +227,16 @@ def _parse_summary_metrics(workbook):
         if revenue or cost:
             summary["monthly_finance"].append((label, revenue, cost))
 
-    if not summary["monthly_finance"]:
+    if not summary["monthly_finance"] and summary["total_revenue"] is not None and summary["cost"] is not None:
         summary["monthly_finance"] = [
             ("دوره گزارش", summary["total_revenue"], summary["cost"])
         ]
 
-    summary["balance"] = summary["total_revenue"] - summary["cost"]
+    summary["balance"] = (
+        summary["total_revenue"] - summary["cost"]
+        if summary["total_revenue"] is not None and summary["cost"] is not None
+        else None
+    )
     return summary
 
 
@@ -410,6 +473,214 @@ def _parse_detail_cost(workbook):
     return subtotals[-1] if subtotals else 0.0
 
 
+
+def _detail_cost_reconciliation_findings(
+    workbook_values, workbook_formulas, summary_cost: float | None, detail_cost: float
+) -> list[dict]:
+    """Return conservative diagnostics for suspicious detail-cost reconciliation.
+
+    This function never changes or reallocates costs. It reports exact amount matches
+    and non-zero detail rows excluded by a SUM range so an operator can verify them.
+    """
+    sheet = _find_sheet(
+        workbook_values, ["عملکرد مالی-هزینه‌ها", "عملکرد مالی-هزینه ها"]
+    )
+    if sheet is None:
+        return []
+
+    formula_sheet = (
+        workbook_formulas[sheet.title]
+        if workbook_formulas is not None and sheet.title in workbook_formulas.sheetnames
+        else None
+    )
+    total_col = next(
+        (
+            col_no
+            for col_no in range(1, sheet.max_column + 1)
+            if _normal_key(_clean_text(sheet.cell(3, col_no).value)) in {"مجموع", "جمع"}
+        ),
+        None,
+    )
+    if total_col is None:
+        return []
+
+    findings = []
+    summary_difference = (
+        float(detail_cost or 0) - float(summary_cost or 0)
+        if summary_cost is not None
+        else None
+    )
+
+    # If the total gap exactly matches one detail line, surface it as a lead,
+    # not an automatic correction or proof of error.
+    if summary_difference is not None and abs(summary_difference) > 1:
+        tolerance = max(0.1, abs(summary_difference) * 1e-9)
+        current_group = ""
+        matching_rows = []
+        for row_no in range(4, sheet.max_row + 1):
+            group_label = _clean_text(sheet.cell(row_no, 2).value)
+            item_label = _clean_text(sheet.cell(row_no, 3).value)
+            combined_label = _normal_key(f"{group_label} {item_label}")
+            if "مجموع" in combined_label or "جمع" in combined_label:
+                continue
+            if group_label:
+                current_group = group_label
+            if not item_label:
+                continue
+            amount = _clean_number(sheet.cell(row_no, total_col).value)
+            if math.isclose(abs(amount), abs(summary_difference), rel_tol=1e-9, abs_tol=tolerance):
+                matching_rows.append((row_no, current_group, item_label, amount))
+
+        if len(matching_rows) == 1:
+            row_no, group, item_label, amount = matching_rows[0]
+            group_prefix = f"{group} / " if group else ""
+            findings.append(
+                {
+                    "title": "ردیف تفصیلی متناظر با مغایرت خلاصه",
+                    "detail": (
+                        f"اختلاف هزینه تفصیلی و خلاصه {summary_difference:,.2f} ریال است "
+                        f"و با مبلغ ردیف {row_no} شیت «{sheet.title}» "
+                        f"({group_prefix}{item_label}) به مبلغ {amount:,.2f} ریال "
+                        "مطابقت دارد. این قلم در جمع تفصیلی گزارش‌شده منعکس شده؛ "
+                        "شمول آن در جمع ماهانه شیت «خلاصه گزارش» را بررسی کنید. "
+                        "مبلغی به‌صورت خودکار تغییر یا تخصیص داده نشده است."
+                    ),
+                    "severity": "HIGH",
+                }
+            )
+
+    # Look for a subtotal whose SUM range ends before the subtotal row, leaving
+    # non-zero labelled line items between the end of the range and the subtotal.
+    total_col_letter = openpyxl.utils.get_column_letter(total_col)
+    sum_pattern = re.compile(
+        r"SUM\(\$?([A-Z]{1,3})\$?(\d+):\$?([A-Z]{1,3})\$?(\d+)\)",
+        re.IGNORECASE,
+    )
+    for subtotal_row in range(4, sheet.max_row + 1):
+        labels = _normal_key(
+            " ".join(
+                _clean_text(sheet.cell(subtotal_row, col_no).value)
+                for col_no in (2, 3)
+            )
+        )
+        if "مجموع" not in labels and "جمع" not in labels:
+            continue
+        formula = (
+            formula_sheet.cell(subtotal_row, total_col).value
+            if formula_sheet is not None
+            else None
+        )
+        if not isinstance(formula, str):
+            continue
+        match = sum_pattern.search(formula.upper())
+        if not match:
+            continue
+        start_col, start_row, end_col, end_row = match.groups()
+        if (
+            start_col.upper() != total_col_letter
+            or end_col.upper() != total_col_letter
+        ):
+            continue
+        first_row, last_row = int(start_row), int(end_row)
+        if first_row > last_row or last_row >= subtotal_row - 1:
+            continue
+
+        omitted_rows = []
+        for row_no in range(last_row + 1, subtotal_row):
+            group_label = _clean_text(sheet.cell(row_no, 2).value)
+            item_label = _clean_text(sheet.cell(row_no, 3).value)
+            combined = _normal_key(f"{group_label} {item_label}")
+            if "مجموع" in combined or "جمع" in combined:
+                continue
+            amount = _clean_number(sheet.cell(row_no, total_col).value)
+            if abs(amount) <= 0.01 or not (group_label or item_label):
+                continue
+            omitted_rows.append((row_no, item_label or group_label, amount))
+
+        if omitted_rows:
+            omitted_text = "؛ ".join(
+                f"ردیف {row_no} «{label}»: {amount:,.2f} ریال"
+                for row_no, label, amount in omitted_rows
+            )
+            findings.append(
+                {
+                    "title": "اقلام مبلغ‌دار خارج از بازه فرمول جمع تفصیلی",
+                    "detail": (
+                        f"سلول {total_col_letter}{subtotal_row} در شیت «{sheet.title}» "
+                        f"با فرمول {formula} محاسبه می‌شود، اما ردیف‌های دارای مبلغ زیر "
+                        f"پس از انتهای بازه و قبل از ردیف جمع قرار دارند: {omitted_text}. "
+                        "این اقلام در این جمع واسط منظور نمی‌شوند؛ بررسی کنید که حذف آن‌ها "
+                        "عمدی است یا باید در جمع گروه و جمع کل لحاظ شوند. "
+                        "هیچ مبلغی خودکار تغییر داده نشده است."
+                    ),
+                    "severity": "HIGH",
+                }
+            )
+
+    # Also inspect period/month subtotal formulas, not only the grand-total column.
+    # A monthly subtotal can omit a non-zero line even when the grand total includes it.
+    for subtotal_row in range(4, sheet.max_row + 1):
+        labels = _normal_key(
+            " ".join(
+                _clean_text(sheet.cell(subtotal_row, col_no).value)
+                for col_no in (2, 3)
+            )
+        )
+        if "مجموع" not in labels and "جمع" not in labels:
+            continue
+
+        for period_col in range(4, total_col):
+            formula = (
+                formula_sheet.cell(subtotal_row, period_col).value
+                if formula_sheet is not None
+                else None
+            )
+            if not isinstance(formula, str):
+                continue
+            match = sum_pattern.search(formula.upper())
+            if not match:
+                continue
+            start_col, start_row, end_col, end_row = match.groups()
+            period_letter = openpyxl.utils.get_column_letter(period_col)
+            if start_col.upper() != period_letter or end_col.upper() != period_letter:
+                continue
+            first_row, last_row = int(start_row), int(end_row)
+            if first_row > last_row or last_row >= subtotal_row - 1:
+                continue
+
+            omitted_rows = []
+            for row_no in range(last_row + 1, subtotal_row):
+                group_label = _clean_text(sheet.cell(row_no, 2).value)
+                item_label = _clean_text(sheet.cell(row_no, 3).value)
+                combined = _normal_key(f"{group_label} {item_label}")
+                if "مجموع" in combined or "جمع" in combined:
+                    continue
+                amount = _clean_number(sheet.cell(row_no, period_col).value)
+                if abs(amount) <= 0.01 or not (group_label or item_label):
+                    continue
+                omitted_rows.append((row_no, item_label or group_label, amount))
+
+            if omitted_rows:
+                omitted_text = "؛ ".join(
+                    f"ردیف {row_no} «{label}»: {amount:,.2f} ریال"
+                    for row_no, label, amount in omitted_rows
+                )
+                cell = f"{period_letter}{subtotal_row}"
+                findings.append(
+                    {
+                        "title": "اقلام ماهانه خارج از بازه فرمول جمع تفصیلی",
+                        "detail": (
+                            f"سلول {cell} در شیت «{sheet.title}» با فرمول {formula} "
+                            f"محاسبه می‌شود، اما ردیف‌های دارای مبلغ زیر خارج از بازه جمع هستند: "
+                            f"{omitted_text}. ممکن است این اقلام از جمع ماهانه جا افتاده باشند؛ "
+                            "طبقه‌بندی و شمول آن‌ها را بررسی کنید. هیچ مبلغی خودکار تغییر داده نشده است."
+                        ),
+                        "severity": "HIGH",
+                    }
+                )
+
+    return findings
+
 def _parse_financial_entries(workbook):
     sheet = workbook["خلاصه گزارش"] if "خلاصه گزارش" in workbook.sheetnames else None
     if sheet is None:
@@ -629,6 +900,30 @@ def _parse_risks(workbook):
     return risks
 
 
+def _apply_explicit_activity_revenue_aliases(activity_ids_by_key: dict[tuple[str, str, str], int]) -> None:
+    """Map known physical-revenue descriptions to their exact operational activities.
+
+    These aliases are intentionally explicit: similar wording alone must never map
+    revenue across tunnels or track fronts.
+    """
+    aliases = (
+        (
+            ("تونل شماره 3", "خط شرقی", "بتن ریزی دیواره داکت"),
+            ("تونل شماره 3", "خط شرقی", "دیواره داکت"),
+        ),
+        (
+            ("تونل شماره 3", "خط غربی", "بتن ریزی دیواره داکت"),
+            ("تونل شماره 3", "خط غربی", "دیواره داکت"),
+        ),
+    )
+    for source_parts, target_parts in aliases:
+        source_key = tuple(_normal_key(part) for part in source_parts)
+        target_key = tuple(_normal_key(part) for part in target_parts)
+        target_activity_id = activity_ids_by_key.get(target_key)
+        if target_activity_id is not None:
+            activity_ids_by_key[source_key] = target_activity_id
+
+
 def _upsert_activity(conn, item, physical, row_no):
     key = (
         _normal_key(item["position"]),
@@ -823,15 +1118,19 @@ def import_workbook(path, db_path: str | Path | None = None):
     workbook_values = openpyxl.load_workbook(path, data_only=True, read_only=False)
     workbook_formulas = openpyxl.load_workbook(path, data_only=False, read_only=False)
 
-    metadata = _parse_project_metadata(workbook_values)
-    metrics = _parse_summary_metrics(workbook_values)
-    physical = _parse_physical_progress(workbook_values)
-    operational = _parse_operational_plan(workbook_values)
-    detail_cost = _parse_detail_cost(workbook_values)
-    resources = _parse_resources(workbook_values)
-    risks = _parse_risks(workbook_values)
-    financial_entries = _parse_financial_entries(workbook_values)
-    formula_errors = scan_formula_errors(workbook_formulas, workbook_values)
+    try:
+        metadata = _parse_project_metadata(workbook_values)
+        metrics = _parse_summary_metrics(workbook_values, workbook_formulas)
+        physical = _parse_physical_progress(workbook_values)
+        operational = _parse_operational_plan(workbook_values)
+        detail_cost = _parse_detail_cost(workbook_values)
+        resources = _parse_resources(workbook_values)
+        risks = _parse_risks(workbook_values)
+        financial_entries = _parse_financial_entries(workbook_values)
+        formula_errors = scan_formula_errors(workbook_formulas, workbook_values)
+    finally:
+        workbook_values.close()
+        workbook_formulas.close()
 
     conn = connect(db_path)
     try:
@@ -850,19 +1149,34 @@ def import_workbook(path, db_path: str | Path | None = None):
             (metadata["name"], metadata["contract_value"], metadata["period_label"]),
         )
 
+        previous_kpi = conn.execute(
+            """
+            SELECT physical_progress,revenue,cost,balance,revenue_progress
+            FROM kpi WHERE project_id=1
+            ORDER BY rowid DESC LIMIT 1
+            """
+        ).fetchone()
+
+        def persisted_kpi_value(metric_key, previous_column):
+            value = metrics[metric_key]
+            if value is not None:
+                return value
+            return float(previous_kpi[previous_column] or 0) if previous_kpi else 0.0
+
+        kpi_values = (
+            persisted_kpi_value("physical_progress", "physical_progress"),
+            persisted_kpi_value("total_revenue", "revenue"),
+            persisted_kpi_value("cost", "cost"),
+            persisted_kpi_value("balance", "balance"),
+            persisted_kpi_value("revenue_progress", "revenue_progress"),
+        )
         conn.execute("DELETE FROM kpi WHERE project_id=1")
         conn.execute(
             """
             INSERT INTO kpi(project_id, physical_progress, revenue, cost, balance, revenue_progress)
             VALUES(1,?,?,?,?,?)
             """,
-            (
-                metrics["physical_progress"],
-                metrics["total_revenue"],
-                metrics["cost"],
-                metrics["balance"],
-                metrics["revenue_progress"],
-            ),
+            kpi_values,
         )
 
         imported_months = []
@@ -890,10 +1204,28 @@ def import_workbook(path, db_path: str | Path | None = None):
             )
 
         conn.execute("DELETE FROM discrepancy WHERE project_id=1 AND source='EXCEL'")
-        conn.execute("DELETE FROM revenue_entry WHERE project_id=1 AND source='EXCEL'")
-        conn.execute("DELETE FROM cost_entry WHERE project_id=1 AND source='EXCEL'")
-        conn.execute("DELETE FROM activity_dependency WHERE project_id=1 AND source='INFERRED'")
-        conn.execute("DELETE FROM physical_progress_entry WHERE project_id=1 AND source='EXCEL'")
+        if metrics["unavailable_kpis"]:
+            conn.execute(
+                """
+                INSERT INTO discrepancy(project_id,title,detail,severity,source)
+                VALUES(1,?,?,?,'EXCEL')
+                """,
+                (
+                    "نتیجه فرمول KPI در Excel در دسترس نیست",
+                    "برای جلوگیری از بازنویسی مقدار قبلی، فیلدهای زیر از نتیجه cached خالی بودند و مقدار ذخیره‌شده قبلی حفظ شد (در ورود اولیه مقدار ۰ باقی ماند): "
+                    + "، ".join(metrics["unavailable_kpis"]),
+                    "HIGH",
+                ),
+            )
+        # Replace imported rows only when the corresponding section was parsed successfully.
+        # An empty parser result can mean a changed workbook layout; preserve prior Excel data
+        # and record a diagnostic instead of silently erasing it.
+        if financial_entries["revenue"]:
+            conn.execute("DELETE FROM revenue_entry WHERE project_id=1 AND source='EXCEL'")
+        if financial_entries["cost"]:
+            conn.execute("DELETE FROM cost_entry WHERE project_id=1 AND source='EXCEL'")
+        if physical:
+            conn.execute("DELETE FROM physical_progress_entry WHERE project_id=1 AND source='EXCEL'")
 
         imported_resource_ids = set()
         for item in resources:
@@ -1010,6 +1342,28 @@ def import_workbook(path, db_path: str | Path | None = None):
                 tuple(imported_risk_ids),
             )
 
+        if not financial_entries["revenue"]:
+            conn.execute(
+                "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
+                ("ورود ریز درآمد Excel نیازمند بررسی است",
+                 "در شیت خلاصه گزارش ردیف درآمد دوره‌ای قابل استخراج شناسایی نشد؛ رکوردهای Excel قبلی حفظ شدند. ساختار شیت یا سلول‌های مقدار را بررسی کنید.",
+                 "MEDIUM"),
+            )
+        if not financial_entries["cost"]:
+            conn.execute(
+                "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
+                ("ورود ریز هزینه Excel نیازمند بررسی است",
+                 "در شیت خلاصه گزارش ردیف هزینه دوره‌ای قابل استخراج شناسایی نشد؛ رکوردهای Excel قبلی حفظ شدند. ساختار شیت یا سلول‌های مقدار را بررسی کنید.",
+                 "MEDIUM"),
+            )
+        if not physical:
+            conn.execute(
+                "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
+                ("ورود پیشرفت فیزیکی Excel انجام نشد",
+                 "ساختار یا ردیف‌های شیت پیشرفت فیزیکی شناسایی نشد؛ داده‌های خام Excel قبلی حفظ شدند.",
+                 "HIGH"),
+            )
+
         for entry in financial_entries["revenue"]:
             conn.execute(
                 "INSERT INTO revenue_entry(project_id, activity_id, period, category, amount, source) VALUES(1, NULL, ?, ?, ?, 'EXCEL')",
@@ -1040,12 +1394,30 @@ def import_workbook(path, db_path: str | Path | None = None):
                 )
 
         # Do not destroy the existing model when a workbook layout cannot be parsed.
-        if operational:
+        # Physical progress supplies volume and baseline actuals used by the activity model.
+        # If it cannot be parsed, do not merge the operational plan into activity rows:
+        # _upsert_activity would otherwise reset previously imported actuals/quantities.
+        if operational and physical:
+            conn.execute("DELETE FROM activity_dependency WHERE project_id=1 AND source='INFERRED'")
             imported_activity_ids = set()
+            activity_ids_by_key = {}
             for item in operational:
-                imported_activity_ids.add(
-                    _upsert_activity(conn, item, physical, item["row_no"])
+                activity_id = _upsert_activity(conn, item, physical, item["row_no"])
+                imported_activity_ids.add(activity_id)
+                activity_key = (
+                    _normal_key(item["position"]),
+                    _normal_key(item["zone"]),
+                    _normal_key(item["title"]),
                 )
+                activity_ids_by_key[activity_key] = activity_id
+
+            _apply_explicit_activity_revenue_aliases(activity_ids_by_key)
+
+            # Tie each physical-progress row's total revenue basis (unit rate × total quantity)
+            # to the same normalized activity identity used by the Excel importer.
+            sync_activity_revenue_from_physical(
+                conn, physical, activity_ids_by_key, project_id=1
+            )
             infer_activity_dependencies = __import__('app.services.control', fromlist=['infer_activity_dependencies']).infer_activity_dependencies
             infer_activity_dependencies(conn, 1)
             schedule_result = calculate_schedule(conn, 1, persist=True)
@@ -1078,12 +1450,21 @@ def import_workbook(path, db_path: str | Path | None = None):
                         "MEDIUM",
                     ),
                 )
-        else:
+        elif not operational:
             conn.execute(
-                    "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
+                "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
                 (
                     "ورود برنامه عملیاتی انجام نشد",
                     "ساختار شیت «برنامه عملیاتی» شناسایی نشد؛ داده‌های فعالیت قبلی حفظ شدند.",
+                    "HIGH",
+                ),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
+                (
+                    "به‌روزرسانی فعالیت‌ها متوقف شد",
+                    "برنامه عملیاتی شناسایی شد، اما شیت پیشرفت فیزیکی قابل استخراج نبود؛ برای جلوگیری از بازنویسی حجم و عملکرد مبنای قبلی، به‌روزرسانی فعالیت‌ها و وابستگی‌ها انجام نشد.",
                     "HIGH",
                 ),
             )
@@ -1096,7 +1477,7 @@ def import_workbook(path, db_path: str | Path | None = None):
             )
             for item in operational
         }
-        unmatched_physical = len(set(physical) - operational_keys)
+        unmatched_physical = len(set(physical) - operational_keys) if physical and operational else 0
         if unmatched_physical:
             conn.execute(
                 "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
@@ -1107,7 +1488,7 @@ def import_workbook(path, db_path: str | Path | None = None):
                 ),
             )
 
-        unmatched_operational = len(operational_keys - set(physical))
+        unmatched_operational = len(operational_keys - set(physical)) if physical and operational else 0
         if unmatched_operational:
             conn.execute(
                 "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
@@ -1118,11 +1499,23 @@ def import_workbook(path, db_path: str | Path | None = None):
                 ),
             )
 
-        discrepancy = detect_finance_discrepancy(metrics["cost"], detail_cost)
+        discrepancy = (
+            detect_finance_discrepancy(metrics["cost"], detail_cost)
+            if metrics["cost"] is not None
+            else None
+        )
         if discrepancy:
             conn.execute(
                 "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
                 (discrepancy["title"], discrepancy["detail"], discrepancy["severity"]),
+            )
+
+        for finding in _detail_cost_reconciliation_findings(
+            workbook_values, workbook_formulas, metrics["cost"], detail_cost
+        ):
+            conn.execute(
+                "INSERT INTO discrepancy(project_id,title,detail,severity,source) VALUES(1,?,?,?,'EXCEL')",
+                (finding["title"], finding["detail"], finding["severity"]),
             )
 
         for error in formula_errors:
@@ -1136,6 +1529,58 @@ def import_workbook(path, db_path: str | Path | None = None):
                 (error["title"], error["detail"], error["severity"]),
             )
 
+        # Return an auditable import summary so the UI can show what was actually loaded.
+        import_report = {
+            "project": metadata["name"],
+            "activities": conn.execute(
+                "SELECT COUNT(*) FROM activity WHERE project_id=1 AND source='EXCEL'"
+            ).fetchone()[0],
+            "physical_rows": conn.execute(
+                "SELECT COUNT(*) FROM physical_progress_entry WHERE project_id=1 AND source='EXCEL'"
+            ).fetchone()[0],
+            "resources": conn.execute(
+                "SELECT COUNT(*) FROM resource WHERE project_id=1 AND source='EXCEL'"
+            ).fetchone()[0],
+            "resource_periods": conn.execute(
+                "SELECT COUNT(*) FROM resource_period WHERE source='EXCEL' AND resource_id IN "
+                "(SELECT id FROM resource WHERE project_id=1 AND source='EXCEL')"
+            ).fetchone()[0],
+            "risks": conn.execute(
+                "SELECT COUNT(*) FROM risk WHERE project_id=1 AND source='EXCEL'"
+            ).fetchone()[0],
+            "revenue_rows": conn.execute(
+                "SELECT COUNT(*) FROM revenue_entry WHERE project_id=1 AND source='EXCEL'"
+            ).fetchone()[0],
+            "cost_rows": conn.execute(
+                "SELECT COUNT(*) FROM cost_entry WHERE project_id=1 AND source='EXCEL'"
+            ).fetchone()[0],
+            "activity_revenue_rows": conn.execute(
+                "SELECT COUNT(*) FROM revenue_entry WHERE project_id=1 "
+                "AND source='EXCEL_ACTIVITY' AND activity_id IS NOT NULL"
+            ).fetchone()[0],
+            "unmatched_activity_revenue_rows": conn.execute(
+                "SELECT COUNT(*) FROM unmatched_activity_revenue "
+                "WHERE project_id=1 AND status='CURRENT'"
+            ).fetchone()[0],
+            "unmatched_activity_revenue_amount": conn.execute(
+                "SELECT COALESCE(SUM(amount),0) FROM unmatched_activity_revenue "
+                "WHERE project_id=1 AND status='CURRENT'"
+            ).fetchone()[0],
+            "unallocated_excel_revenue_rows": conn.execute(
+                "SELECT COUNT(*) FROM revenue_entry WHERE project_id=1 AND source='EXCEL' AND activity_id IS NULL"
+            ).fetchone()[0],
+            "unallocated_excel_cost_rows": conn.execute(
+                "SELECT COUNT(*) FROM cost_entry WHERE project_id=1 AND source='EXCEL' AND activity_id IS NULL"
+            ).fetchone()[0],
+            "warnings": [
+                {"title": row["title"], "detail": row["detail"], "severity": row["severity"]}
+                for row in conn.execute(
+                    "SELECT title,detail,severity FROM discrepancy "
+                    "WHERE project_id=1 AND source='EXCEL' ORDER BY "
+                    "CASE severity WHEN 'HIGH' THEN 0 WHEN 'MEDIUM' THEN 1 ELSE 2 END, id"
+                )
+            ],
+        }
         conn.commit()
     except Exception:
         conn.rollback()
@@ -1144,6 +1589,8 @@ def import_workbook(path, db_path: str | Path | None = None):
         conn.close()
         workbook_values.close()
         workbook_formulas.close()
+
+    return import_report
 
 
 if __name__ == "__main__":
