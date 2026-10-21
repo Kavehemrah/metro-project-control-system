@@ -838,6 +838,30 @@ def _parse_risks(workbook):
     return risks
 
 
+def _apply_explicit_activity_revenue_aliases(activity_ids_by_key: dict[tuple[str, str, str], int]) -> None:
+    """Map known physical-revenue descriptions to their exact operational activities.
+
+    These aliases are intentionally explicit: similar wording alone must never map
+    revenue across tunnels or track fronts.
+    """
+    aliases = (
+        (
+            ("تونل شماره 3", "خط شرقی", "بتن ریزی دیواره داکت"),
+            ("تونل شماره 3", "خط شرقی", "دیواره داکت"),
+        ),
+        (
+            ("تونل شماره 3", "خط غربی", "بتن ریزی دیواره داکت"),
+            ("تونل شماره 3", "خط غربی", "دیواره داکت"),
+        ),
+    )
+    for source_parts, target_parts in aliases:
+        source_key = tuple(_normal_key(part) for part in source_parts)
+        target_key = tuple(_normal_key(part) for part in target_parts)
+        target_activity_id = activity_ids_by_key.get(target_key)
+        if target_activity_id is not None:
+            activity_ids_by_key[source_key] = target_activity_id
+
+
 def _upsert_activity(conn, item, physical, row_no):
     key = (
         _normal_key(item["position"]),
@@ -1324,6 +1348,8 @@ def import_workbook(path, db_path: str | Path | None = None):
                     _normal_key(item["title"]),
                 )
                 activity_ids_by_key[activity_key] = activity_id
+
+            _apply_explicit_activity_revenue_aliases(activity_ids_by_key)
 
             # Tie each physical-progress row's total revenue basis (unit rate × total quantity)
             # to the same normalized activity identity used by the Excel importer.
