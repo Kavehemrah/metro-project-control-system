@@ -617,6 +617,68 @@ def _detail_cost_reconciliation_findings(
                 }
             )
 
+    # Also inspect period/month subtotal formulas, not only the grand-total column.
+    # A monthly subtotal can omit a non-zero line even when the grand total includes it.
+    for subtotal_row in range(4, sheet.max_row + 1):
+        labels = _normal_key(
+            " ".join(
+                _clean_text(sheet.cell(subtotal_row, col_no).value)
+                for col_no in (2, 3)
+            )
+        )
+        if "مجموع" not in labels and "جمع" not in labels:
+            continue
+
+        for period_col in range(4, total_col):
+            formula = (
+                formula_sheet.cell(subtotal_row, period_col).value
+                if formula_sheet is not None
+                else None
+            )
+            if not isinstance(formula, str):
+                continue
+            match = sum_pattern.search(formula.upper())
+            if not match:
+                continue
+            start_col, start_row, end_col, end_row = match.groups()
+            period_letter = openpyxl.utils.get_column_letter(period_col)
+            if start_col.upper() != period_letter or end_col.upper() != period_letter:
+                continue
+            first_row, last_row = int(start_row), int(end_row)
+            if first_row > last_row or last_row >= subtotal_row - 1:
+                continue
+
+            omitted_rows = []
+            for row_no in range(last_row + 1, subtotal_row):
+                group_label = _clean_text(sheet.cell(row_no, 2).value)
+                item_label = _clean_text(sheet.cell(row_no, 3).value)
+                combined = _normal_key(f"{group_label} {item_label}")
+                if "مجموع" in combined or "جمع" in combined:
+                    continue
+                amount = _clean_number(sheet.cell(row_no, period_col).value)
+                if abs(amount) <= 0.01 or not (group_label or item_label):
+                    continue
+                omitted_rows.append((row_no, item_label or group_label, amount))
+
+            if omitted_rows:
+                omitted_text = "؛ ".join(
+                    f"ردیف {row_no} «{label}»: {amount:,.2f} ریال"
+                    for row_no, label, amount in omitted_rows
+                )
+                cell = f"{period_letter}{subtotal_row}"
+                findings.append(
+                    {
+                        "title": "اقلام ماهانه خارج از بازه فرمول جمع تفصیلی",
+                        "detail": (
+                            f"سلول {cell} در شیت «{sheet.title}» با فرمول {formula} "
+                            f"محاسبه می‌شود، اما ردیف‌های دارای مبلغ زیر خارج از بازه جمع هستند: "
+                            f"{omitted_text}. ممکن است این اقلام از جمع ماهانه جا افتاده باشند؛ "
+                            "طبقه‌بندی و شمول آن‌ها را بررسی کنید. هیچ مبلغی خودکار تغییر داده نشده است."
+                        ),
+                        "severity": "HIGH",
+                    }
+                )
+
     return findings
 
 def _parse_financial_entries(workbook):
