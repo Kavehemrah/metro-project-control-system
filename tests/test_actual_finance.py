@@ -312,3 +312,33 @@ def test_quarantined_activity_revenue_keeps_excel_summary_as_reference(tmp_path)
     assert result["revenue_budget_linked"] == 0
     assert result["revenue_summary_reference"] == 10000
     assert result["revenue_budget_unallocated"] == 0
+
+
+def test_current_unmatched_revenue_bases_count_once_as_unallocated_budget(tmp_path):
+    conn = connect(tmp_path / "unallocated-revenue-budget.db")
+    conn.execute(
+        "INSERT INTO project(id,name,contract_value) VALUES(1,'Package revenue test',1000)"
+    )
+    conn.executemany(
+        """
+        INSERT INTO unmatched_activity_revenue(
+            project_id,source_row_no,source_key,position,zone,title,unit,
+            unit_rate,total_qty,amount,status,source
+        ) VALUES(1,?,?,?,?,?,?,?,?,?,'CURRENT','EXCEL')
+        """,
+        [
+            (6, 'key-6', 'تونل شماره 2', 'خط شرقی',
+             'انتقال، مونتاژ و نصب خط', 'متر', 10, 20, 200),
+            (13, 'key-13', 'تونل شماره 4', 'خط شرقی',
+             'پخش و مونتاژ ریل باقی مانده', 'متر', 15, 20, 300),
+        ],
+    )
+
+    summary = finance_performance(conn, project_id=1)
+
+    assert summary["revenue_budget_linked"] == 0
+    assert summary["revenue_budget_unallocated"] == 500
+    assert conn.execute(
+        "SELECT COUNT(*) FROM unmatched_activity_revenue WHERE status='CURRENT'"
+    ).fetchone()[0] == 2
+    conn.close()
