@@ -885,3 +885,27 @@ def test_finance_diagnostic_script_cli_runs_from_repository_root():
     assert result.returncode == 0, result.stderr
     assert "Read-only source-sheet diagnostics" in result.stdout
 
+
+
+def test_explicit_duct_wall_revenue_aliases_match_only_same_tunnel_and_front():
+    from imports.import_excel import _apply_explicit_activity_revenue_aliases, _normal_key
+
+    east = tuple(_normal_key(value) for value in ("تونل شماره 3", "خط شرقی", "دیواره داکت"))
+    west = tuple(_normal_key(value) for value in ("تونل شماره 3", "خط غربی", "دیواره داکت"))
+    mapping = {east: 101, west: 202}
+
+    _apply_explicit_activity_revenue_aliases(mapping)
+
+    assert mapping[tuple(_normal_key(value) for value in (
+        "تونل شماره 3", "خط شرقی", "بتن ریزی دیواره داکت"
+    ))] == 101
+    assert mapping[tuple(_normal_key(value) for value in (
+        "تونل شماره 3", "خط غربی", "بتن ریزی دیواره داکت"
+    ))] == 202
+    # Composite packages must not be silently assigned to either constituent activity.
+    assert tuple(_normal_key(value) for value in (
+        "تونل شماره 2", "خط شرقی", "انتقال، مونتاژ و نصب خط"
+    )) not in mapping
+    assert tuple(_normal_key(value) for value in (
+        "تونل شماره 4", "خط شرقی", "پخش و مونتاژ ریل باقی مانده"
+    )) not in mapping
