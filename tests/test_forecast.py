@@ -59,7 +59,7 @@ def test_schedule_skips_registered_holiday_for_fs_zero_lag(tmp_path):
     conn = connect(tmp_path / "holiday-schedule.db")
     conn.execute("INSERT INTO project(id,name) VALUES(1,'Holiday schedule test')")
     first = _add_activity(conn, "A", "2026-10-15", "2026-10-15", 10, 0)
-    second = _add_activity(conn, "B", "2026-10-16", "2026-10-17", 10, 0)
+    second = _add_activity(conn, "B", "2026-10-16", "2026-10-18", 10, 0)
     conn.execute(
         "INSERT INTO calendar_holiday(project_id,holiday_date,title) VALUES(1,'2026-10-16','Project holiday')"
     )
