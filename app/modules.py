@@ -36,6 +36,7 @@ from .services.control import activity_control, update_activity_rollup
 from .services.dates import format_date, normalize_date
 from .services.forecast import calculate_schedule, forecast_finance
 from .services.schedule_analysis import analyze_critical_path
+from .services.work_calendar import count_scheduled_days, project_holidays
 from .services.actual_finance import activity_cost_coverage, finance_performance, record_actual
 from .services.activity_costs import (
     activity_cost_items,
@@ -415,7 +416,7 @@ class ActivityPage(RecordPage):
             activities = [
                 dict(row)
                 for row in conn.execute(
-                    "SELECT id, title, duration_days, start_date FROM activity WHERE project_id=? ORDER BY row_no, id",
+                    "SELECT id, title, duration_days, start_date, finish_date FROM activity WHERE project_id=? ORDER BY row_no, id",
                     (self.project_id,),
                 ).fetchall()
             ]
@@ -832,9 +833,12 @@ class ActivityPage(RecordPage):
         if start and finish and finish < start:
             raise ValueError("تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد.")
         if start and finish:
-            values["duration_days"] = max(
-                1, (date.fromisoformat(finish) - date.fromisoformat(start)).days + 1
-            )
+            conn = connect()
+            try:
+                holidays = project_holidays(conn, self.project_id)
+            finally:
+                conn.close()
+            values["duration_days"] = count_scheduled_days(start, finish, holidays)
         values["source"] = "MANUAL"
         return values
 
