@@ -4,6 +4,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import date
 
+from app.services.dates import normalize_date
 from app.services.forecast import calculate_schedule
 from app.services.work_calendar import count_scheduled_days, project_holidays
 
@@ -48,8 +49,8 @@ def create_schedule_baseline(
     holidays = project_holidays(conn, project_id)
     snapshot_rows = []
     for row in activities:
-        start = date.fromisoformat(str(row["start_date"])[:10])
-        finish = date.fromisoformat(str(row["finish_date"])[:10])
+        start = date.fromisoformat(normalize_date(row["start_date"]))
+        finish = date.fromisoformat(normalize_date(row["finish_date"]))
         if finish < start:
             raise ValueError(f"Activity {row['id']} has a finish date before its start date.")
         duration = count_scheduled_days(start, finish, holidays)
@@ -78,7 +79,7 @@ def create_schedule_baseline(
                 (
                     baseline_id, row["id"], row["row_no"], row["position"],
                     row["zone"], row["title"], row["quantity"], row["unit"],
-                    str(row["start_date"])[:10], str(row["finish_date"])[:10], duration,
+                    normalize_date(row["start_date"]), normalize_date(row["finish_date"]), duration,
                 )
                 for row, duration in snapshot_rows
             ],
