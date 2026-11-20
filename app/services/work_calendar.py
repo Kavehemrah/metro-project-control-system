@@ -34,12 +34,22 @@ def normalize_workday(value, holidays: Iterable = (), direction: int = 1) -> dat
 
 
 def shift_days(value, offset: int, holidays: Iterable = ()) -> date:
-    """Shift by scheduled days, skipping explicitly registered holidays."""
-    day = normalize_workday(value, holidays, 1 if offset >= 0 else -1)
-    remaining = abs(int(offset))
-    step = 1 if offset >= 0 else -1
+    """Shift a milestone by scheduled days, skipping explicitly registered holidays.
+
+    A positive offset is counted after the supplied date. This matters when an
+    actual milestone itself falls on a registered holiday: FS+0 still begins
+    on the first non-holiday date after that milestone.
+    """
+    day = parse_date(value)
+    if day is None:
+        raise ValueError("date must be an ISO date or datetime.date")
     excluded = {parse_date(item) for item in holidays}
     excluded.discard(None)
+    offset = int(offset)
+    if offset == 0:
+        return normalize_workday(day, excluded, 1)
+    step = 1 if offset > 0 else -1
+    remaining = abs(offset)
     while remaining:
         day += timedelta(days=step)
         if day not in excluded:
