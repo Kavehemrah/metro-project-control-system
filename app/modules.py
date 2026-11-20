@@ -467,67 +467,115 @@ class ActivityWorkspaceDialog(QDialog):
             )
             for title, spec in self.tab_specs.items():
                 if spec["kind"] == "daily":
-                    rows = conn.execute(
-                        f"SELECT id,{spec['date_column']} AS record_date,quantity,source,"
-                        + ("notes" if spec["table_name"] == "activity_daily_actual" else "'' AS notes")
-                        + f" FROM {spec['table_name']} WHERE activity_id=? ORDER BY {spec['date_column']},id",
-                        (self.activity_id,),
-                    ).fetchall()
+                    if spec["table_name"] == "activity_daily_actual":
+                        rows = conn.execute(
+                            """
+                            SELECT id,actual_date AS record_date,quantity,source,notes,0 AS source_order
+                            FROM activity_daily_actual WHERE activity_id=?
+                            UNION ALL
+                            SELECT -id AS id,period AS record_date,actual_qty AS quantity,
+                                   'EXCEL_PERIOD' AS source,
+                                   'عملکرد دوره‌ای واردشده از Excel؛ تاریخ دقیق روزانه در فایل منبع ثبت نشده است' AS notes,
+                                   1 AS source_order
+                            FROM activity_period
+                            WHERE activity_id=? AND source='EXCEL' AND COALESCE(actual_qty,0)>0
+                            ORDER BY record_date,source_order,id
+                            """,
+                            (self.activity_id, self.activity_id),
+                        ).fetchall()
+                    else:
+                        rows = conn.execute(
+                            f"SELECT id,{spec['date_column']} AS record_date,quantity,source,"
+                            + ("notes" if spec["table_name"] == "activity_daily_actual" else "'' AS notes")
+                            + f" FROM {spec['table_name']} WHERE activity_id=? ORDER BY {spec['date_column']},id",
+                            (self.activity_id,),
+                        ).fetchall()
                     table = spec["table"]
                     table.setRowCount(len(rows))
                     for ri, row in enumerate(rows):
-                        values = [format_date(row["record_date"]), f"{float(row['quantity'] or 0):,.2f}"]
+                        record_source = row["source"] or ""
+                        record_date = str(row["record_date"] or "") if record_source == "EXCEL_PERIOD" else format_date(row["record_date"])
+                        source_label = "Excel - عملکرد دوره‌ای" if record_source == "EXCEL_PERIOD" else record_source
+                        values = [record_date, f"{float(row['quantity'] or 0):,.2f}"]
                         if spec["table_name"] == "activity_daily_actual":
                             values.append(row["notes"] or "")
-                        values.append(row["source"] or "")
+                        values.append(source_label)
                         for ci, value in enumerate(values):
                             item = QTableWidgetItem(str(value))
                             if ci == 0:
                                 item.setData(Qt.UserRole, int(row["id"]))
-                                item.setData(Qt.UserRole + 1, row["source"] or "")
+                                item.setData(Qt.UserRole + 1, record_source)
                             table.setItem(ri, ci, item)
                     table.resizeColumnsToContents()
                 else:
                     entry_type = spec["entry_type"]
                     if entry_type == "REVENUE":
-                        budget_row = conn.execute(
+                        budget_rows = conn.execute(
                             """
-                            SELECT COALESCE(SUM(amount),0) AS amount
-                            FROM revenue_entry
-                            WHERE project_id=? AND activity_id=?
-                              AND source IN ('EXCEL_ACTIVITY','MANUAL')
+                            SELECT id,period AS record_date,category,amount,source,'' AS notes
+                            FROM revenue_entry WHERE project_id=? AND activity_id=?
+                            ORDER BY period,id
                             """,
                             (self.project_id, self.activity_id),
-                        ).fetchone()
+                        ).fetchall()
+                        budget_total = sum(float(row["amount"] or 0) for row in budget_rows)
                         total_qty = max(0.0, float(a["quantity"] or 0))
-                        unit_rate = float(budget_row["amount"] or 0) / total_qty if total_qty > 0 else 0.0
+                        unit_rate = budget_total / total_qty if total_qty > 0 else 0.0
+                        period_rows = conn.execute(
+                            """
+                            SELECT id,period AS record_date,actual_qty AS quantity
+                            FROM activity_period
+                            WHERE activity_id=? AND source='EXCEL' AND COALESCE(actual_qty,0)>0
+                            ORDER BY period,id
+                            """,
+                            (self.activity_id,),
+                        ).fetchall()
                         daily_rows = conn.execute(
                             """
                             SELECT id,actual_date AS record_date,quantity,source,notes
-                            FROM activity_daily_actual
-                            WHERE activity_id=?
+                            FROM activity_daily_actual WHERE activity_id=?
                             ORDER BY actual_date,id
                             """,
                             (self.activity_id,),
                         ).fetchall()
+                        display_rows = []
                         calculated_total = 0.0
-                        table = spec["table"]
-                        table.setRowCount(len(daily_rows))
-                        for ri, row in enumerate(daily_rows):
+                        for row in period_rows:
                             amount = max(0.0, float(row["quantity"] or 0)) * unit_rate
                             calculated_total += amount
-                            values = [
+                            display_rows.append((
+                                str(row["record_date"] or ""),
+                                "درآمد محاسبه‌شده از عملکرد دوره‌ای Excel",
+                                amount, "محاسباتی - دوره‌ای",
+                                f"مقدار دوره: {float(row['quantity'] or 0):,.2f} × نرخ واحد: {unit_rate:,.2f}",
+                            ))
+                        for row in daily_rows:
+                            amount = max(0.0, float(row["quantity"] or 0)) * unit_rate
+                            calculated_total += amount
+                            display_rows.append((
                                 format_date(row["record_date"]),
                                 row["notes"] or "درآمد محاسبه‌شده از عملکرد روزانه",
-                                f"{amount:,.0f}",
-                                "محاسباتی",
-                                f"مقدار: {float(row['quantity'] or 0):,.2f} × نرخ واحد: {unit_rate:,.2f}",
-                            ]
+                                amount, "محاسباتی - روزانه",
+                                f"مقدار روز: {float(row['quantity'] or 0):,.2f} × نرخ واحد: {unit_rate:,.2f}",
+                            ))
+                        # Imported revenue rows are the allocation basis, not earned revenue.
+                        for row in budget_rows:
+                            display_rows.append((
+                                str(row["record_date"] or ""), row["category"] or "",
+                                float(row["amount"] or 0),
+                                "مبنای درآمد / تخصیص " + (row["source"] or ""),
+                                "مبلغ مبنا؛ درآمد تحقق‌یافته نیست",
+                            ))
+                        display_rows.sort(key=lambda row: (row[0], row[3]))
+                        table = spec["table"]
+                        table.setRowCount(len(display_rows))
+                        for ri, values in enumerate(display_rows):
                             for ci, value in enumerate(values):
                                 table.setItem(ri, ci, QTableWidgetItem(str(value)))
                         spec["summary"].setText(
-                            f"نرخ واحد محاسباتی: {unit_rate:,.2f} ریال  |  "
-                            f"درآمد تجمعی محاسبه‌شده: {calculated_total:,.0f} ریال"
+                            f"مبنای درآمد تخصیص‌یافته: {budget_total:,.0f} ریال  |  "
+                            f"نرخ محاسباتی: {unit_rate:,.2f} ریال  |  "
+                            f"درآمد محاسبه‌شده از عملکردهای قبلی و روزانه: {calculated_total:,.0f} ریال"
                         )
                         table.resizeColumnsToContents()
                         continue
@@ -541,6 +589,14 @@ class ActivityWorkspaceDialog(QDialog):
                             """,
                             (self.project_id, self.activity_id),
                         ).fetchone()
+                        imported_cost_rows = conn.execute(
+                            """
+                            SELECT id,period AS record_date,category,amount,source,'' AS notes
+                            FROM cost_entry WHERE project_id=? AND activity_id=?
+                            ORDER BY period,id
+                            """,
+                            (self.project_id, self.activity_id),
+                        ).fetchall()
                         actual_rows = conn.execute(
                             """
                             SELECT id,entry_date AS record_date,category,amount,source,notes
@@ -552,16 +608,21 @@ class ActivityWorkspaceDialog(QDialog):
                         ).fetchall()
                         actual_total = sum(float(row["amount"] or 0) for row in actual_rows)
                         spec["summary"].setText(
-                            f"بودجه/مبلغ مبنای تخصیص‌یافته: {float(budget_row['amount'] or 0):,.0f} ریال  |  "
+                            f"مبلغ مبنای هزینه: {float(budget_row['amount'] or 0):,.0f} ریال  |  "
                             f"هزینه واقعی ثبت‌شده: {actual_total:,.0f} ریال"
                         )
+                        combined_cost = [("cost_entry", row) for row in imported_cost_rows] + [
+                            ("actual_finance_entry", row) for row in actual_rows
+                        ]
+                        combined_cost.sort(key=lambda pair: (str(pair[1]["record_date"] or ""), pair[0], int(pair[1]["id"])))
                         table = spec["table"]
-                        table.setRowCount(len(actual_rows))
-                        for ri, row in enumerate(actual_rows):
+                        table.setRowCount(len(combined_cost))
+                        for ri, (table_name, row) in enumerate(combined_cost):
+                            is_actual = table_name == "actual_finance_entry"
                             values = [
-                                format_date(row["record_date"]), row["category"] or "",
-                                f"{float(row['amount'] or 0):,.0f}",
-                                "واقعی " + (row["source"] or ""),
+                                format_date(row["record_date"]) if is_actual else str(row["record_date"] or ""),
+                                row["category"] or "", f"{float(row['amount'] or 0):,.0f}",
+                                ("واقعی " if is_actual else "مبنای هزینه ") + (row["source"] or ""),
                                 row["notes"] or "",
                             ]
                             for ci, value in enumerate(values):
@@ -569,7 +630,7 @@ class ActivityWorkspaceDialog(QDialog):
                                 if ci == 0:
                                     item.setData(Qt.UserRole, int(row["id"]))
                                     item.setData(Qt.UserRole + 1, row["source"] or "")
-                                    item.setData(Qt.UserRole + 2, "actual_finance_entry")
+                                    item.setData(Qt.UserRole + 2, table_name)
                                 table.setItem(ri, ci, item)
                         table.resizeColumnsToContents()
                         continue
