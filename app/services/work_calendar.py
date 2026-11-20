@@ -89,6 +89,7 @@ def project_holidays(conn, project_id: int) -> tuple[date, ...]:
     ).fetchall()
     return tuple(day for row in rows if (day := parse_date(row["holiday_date"])) is not None)
 
+
 def count_scheduled_days(start, finish, holidays: Iterable = ()) -> int:
     """Count non-holiday dates in an inclusive date range."""
     first = normalize_workday(start, holidays, 1)
