@@ -34,7 +34,7 @@ def test_schedule_propagates_actual_delay_through_finish_to_start_chain(tmp_path
             project_id,activity_id,predecessor_activity_id,relation_type,lag_days,source
         ) VALUES(1,?,?,'finish_to_start',?,'MANUAL')
         """,
-        [(second, first, 1), (third, second, 1)],
+        [(second, first, 0), (third, second, 0)],
     )
     conn.execute(
         "INSERT INTO activity_daily_actual(activity_id,actual_date,quantity,source) VALUES(?,?,?,'MANUAL')",
@@ -54,6 +54,88 @@ def test_schedule_propagates_actual_delay_through_finish_to_start_chain(tmp_path
     assert dates["C"]["forecast_finish"].isoformat() == "2026-10-09"
     assert dates["C"]["delay_days"] == 1
 
+
+def test_schedule_skips_registered_holiday_for_fs_zero_lag(tmp_path):
+    conn = connect(tmp_path / "holiday-schedule.db")
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Holiday schedule test')")
+    first = _add_activity(conn, "A", "2026-10-15", "2026-10-15", 10, 0)
+    second = _add_activity(conn, "B", "2026-10-16", "2026-10-18", 10, 0)
+    conn.execute(
+        "INSERT INTO calendar_holiday(project_id,holiday_date,title) VALUES(1,'2026-10-16','Project holiday')"
+    )
+    conn.execute(
+        """
+        INSERT INTO activity_dependency(
+            project_id,activity_id,predecessor_activity_id,relation_type,lag_days,source
+        ) VALUES(1,?,?,'finish_to_start',0,'MANUAL')
+        """,
+        (second, first),
+    )
+
+    result = calculate_schedule(conn, 1, as_of=date(2026, 10, 18), persist=False)
+    dates = {item["title"]: item for item in result["activities"]}
+    conn.close()
+
+    assert dates["B"]["forecast_start"].isoformat() == "2026-10-17"
+    assert dates["B"]["forecast_finish"].isoformat() == "2026-10-18"
+
+
+def test_fs_after_actual_completion_on_holiday_starts_on_next_available_date(tmp_path):
+    conn = connect(tmp_path / "holiday-actual-finish.db")
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Holiday actual finish')")
+    first = _add_activity(conn, "A", "2026-10-15", "2026-10-15", 10, 0)
+    second = _add_activity(conn, "B", "2026-10-16", "2026-10-17", 10, 0)
+    conn.execute(
+        "INSERT INTO calendar_holiday(project_id,holiday_date,title) VALUES(1,'2026-10-16','Holiday')"
+    )
+    conn.execute(
+        "INSERT INTO activity_daily_actual(activity_id,actual_date,quantity,source) VALUES(?,? ,?,'MANUAL')",
+        (first, "2026-10-16", 10),
+    )
+    conn.execute(
+        """
+        INSERT INTO activity_dependency(
+            project_id,activity_id,predecessor_activity_id,relation_type,lag_days,source
+        ) VALUES(1,?,?,'finish_to_start',0,'MANUAL')
+        """,
+        (second, first),
+    )
+
+    result = calculate_schedule(conn, 1, as_of=date(2026, 10, 16), persist=False)
+    dates = {item["title"]: item for item in result["activities"]}
+    conn.close()
+
+    assert dates["A"]["forecast_finish"].isoformat() == "2026-10-16"
+    assert dates["B"]["forecast_start"].isoformat() == "2026-10-17"
+
+
+def test_schedule_observed_productivity_uses_scheduled_days_and_as_of(tmp_path):
+    conn = connect(tmp_path / "productivity-calendar.db")
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Productivity calendar test')")
+    activity = _add_activity(conn, "Production", "2026-10-15", "2026-10-20", 50, 0)
+    conn.execute(
+        "INSERT INTO calendar_holiday(project_id,holiday_date,title) VALUES(1,'2026-10-16','Holiday')"
+    )
+    conn.executemany(
+        """
+        INSERT INTO activity_daily_actual(activity_id,actual_date,quantity,source)
+        VALUES(?,? ,?,'MANUAL')
+        """,
+        [
+            (activity, "2026-10-15", 10),
+            (activity, "2026-10-17", 0),
+            (activity, "2026-10-18", 10),
+            (activity, "2026-10-19", 10),
+        ],
+    )
+
+    result = calculate_schedule(conn, 1, as_of=date(2026, 10, 18), persist=False)
+    forecast = result["activities"][0]["forecast_finish"]
+    conn.close()
+
+    # The 19th is after as_of and must not improve the observed production rate.
+    # 20 units / 3 scheduled days = 6.67; 30 remaining / 6.67 => 5 scheduled days.
+    assert forecast.isoformat() == "2026-10-23"
 
 def test_schedule_detects_cycles_without_persisting_partial_results(tmp_path):
     conn = connect(tmp_path / "cycle.db")

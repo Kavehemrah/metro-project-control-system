@@ -1,0 +1,331 @@
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtWidgets import QApplication, QLabel
+
+from app.db import connect as db_connect
+import app.modules as modules
+import app.ui as ui
+
+
+def test_activity_cost_resource_page_loads_unit_costs_and_shortages(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db_path = tmp_path / "activity-cost-ui.db"
+    conn = db_connect(db_path)
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'UI test')")
+    activity_id = conn.execute(
+        """
+        INSERT INTO activity(
+            project_id,row_no,position,zone,title,unit,quantity,remaining_qty,daily_target,source
+        ) VALUES(1,1,'تونل ۴','خط شرقی','بتن‌ریزی اسلب','متر',10,10,2,'MANUAL')
+        """
+    ).lastrowid
+    conn.execute(
+        """
+        INSERT INTO activity_cost_item(
+            project_id,activity_id,category,item_name,unit,quantity_per_activity_unit,unit_price,source
+        ) VALUES(1,?,'مصالح','بتن','مترمکعب',1.5,100,'MANUAL')
+        """,
+        (activity_id,),
+    )
+    resource_id = conn.execute(
+        """
+        INSERT INTO resource(project_id,category,title,available,unit,unit_price,source)
+        VALUES(1,'نیروی انسانی','نیروی بتن‌ریزی',1,'نفر',50,'MANUAL')
+        """
+    ).lastrowid
+    conn.execute(
+        """
+        INSERT INTO activity_daily_plan(activity_id,plan_date,quantity,source)
+        VALUES(?,'2026-10-01',2,'MANUAL')
+        """,
+        (activity_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO activity_resource_requirement(
+            project_id,activity_id,resource_id,category,resource_title,unit,
+            quantity_per_activity_unit,source
+        ) VALUES(1,? ,?,'نیروی انسانی','نیروی بتن‌ریزی','نفر',1.5,'MANUAL')
+        """,
+        (activity_id, resource_id),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(modules, "connect", lambda: db_connect(db_path))
+    page = modules.ActivityCostResourcePage(project_id=1)
+
+    assert page.activity_selector.count() == 1
+    assert page.cost_table.rowCount() == 1
+    assert page.cost_table.item(0, 5).text() == "150"
+    assert page.cost_table.item(0, 6).text() == "1,500"
+    assert page.resource_table.rowCount() == 1
+    assert page.resource_table.item(0, 6).text() == "3.00"
+    assert page.resource_table.item(0, 7).text() == "1.00"
+    assert page.resource_table.item(0, 8).text() == "2.00"
+
+    page.close()
+    assert app is not None
+
+
+def test_main_window_module_imports_with_new_page():
+    import main
+
+    assert hasattr(main, "MainWindow")
+    assert hasattr(modules, "ActivityCostResourcePage")
+
+
+
+def test_resource_requirement_dialog_filters_source_resources_by_category(monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QComboBox, QDialog, QDoubleSpinBox, QLineEdit
+
+    app = QApplication.instance() or QApplication([])
+    db_path = tmp_path / "resource-category-dialog.db"
+    conn = db_connect(db_path)
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Dialog test')")
+    activity_id = conn.execute(
+        """
+        INSERT INTO activity(project_id,row_no,position,zone,title,unit,quantity,source)
+        VALUES(1,1,'تونل ۴','خط شرقی','بتن‌ریزی اسلب','متر',10,'MANUAL')
+        """
+    ).lastrowid
+    machine_id = conn.execute(
+        """
+        INSERT INTO resource(project_id,category,title,unit,source)
+        VALUES(1,'ماشین‌آلات','لودر','دستگاه','MANUAL')
+        """
+    ).lastrowid
+    conn.execute(
+        """
+        INSERT INTO resource(project_id,category,title,unit,source)
+        VALUES(1,'نیروی انسانی','تیم بتن‌ریزی','نفر','MANUAL')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO resource(project_id,category,title,unit,source)
+        VALUES(1,'مصالح','سیمان','تن','MANUAL')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(modules, "connect", lambda: db_connect(db_path))
+    page = modules.ActivityCostResourcePage(project_id=1)
+
+    def accept_dialog(dialog):
+        combos = dialog.findChildren(QComboBox)
+        category_selector, resource_selector = combos[0], combos[1]
+        category_selector.setCurrentIndex(category_selector.findData("ماشین‌آلات"))
+        visible_ids = [
+            resource_selector.itemData(index)
+            for index in range(resource_selector.count())
+            if resource_selector.itemData(index) is not None
+        ]
+        assert visible_ids == [machine_id]
+        resource_selector.setCurrentIndex(resource_selector.findData(machine_id))
+        dialog.findChild(QDoubleSpinBox).setValue(1.75)
+        line_edits = dialog.findChildren(QLineEdit)
+        line_edits[-1].setText("تست ورود منبع")
+        return QDialog.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", accept_dialog)
+    result = page._resource_dialog()
+    assert result is not None
+    values, activity = result
+    assert activity["id"] == activity_id
+    assert values["resource_id"] == machine_id
+    assert values["category"] == "ماشین‌آلات"
+    assert values["resource_title"] == "لودر"
+    assert values["quantity_per_activity_unit"] == 1.75
+    assert values["notes"] == "تست ورود منبع"
+
+    page.close()
+    assert app is not None
+
+
+
+def test_finance_page_keeps_long_summaries_inside_task_tabs(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db_path = tmp_path / "finance-tabs.db"
+    conn = db_connect(db_path)
+    conn.execute(
+        "INSERT INTO project(id,name,contract_value,period_label) VALUES(1,'Finance UI test',100000,'مهر 1405')"
+    )
+    conn.execute(
+        "INSERT INTO kpi(project_id,physical_progress,revenue,cost,balance,revenue_progress) "
+        "VALUES(1,0,1000,600,400,0)"
+    )
+    conn.execute(
+        "INSERT INTO monthly_finance(project_id,month,revenue,cost,source) "
+        "VALUES(1,'مهر 1405',1000,600,'EXCEL')"
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(modules, "connect", lambda: db_connect(db_path))
+    page = modules.FinancePage()
+
+    assert page.finance_tabs.count() == 4
+    assert [page.finance_tabs.tabText(index) for index in range(4)] == [
+        "پوشش هزینه فعالیت‌ها", "دفتر مالی واقعی", "خلاصه دوره‌ای", "تخصیص به فعالیت"
+    ]
+    assert page.coverage_summary.parentWidget() is page.finance_tabs.widget(0)
+    assert page.actual_summary.parentWidget() is page.finance_tabs.widget(1)
+    assert page.forecast_summary.parentWidget() is page.finance_tabs.widget(2)
+
+    page.close()
+    assert app is not None
+
+
+def test_dashboard_shows_reconciliation_detail_and_prioritizes_high_discrepancies(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db_path = tmp_path / "dashboard-discrepancies.db"
+    conn = db_connect(db_path)
+    conn.execute(
+        "INSERT INTO project(id,name,contract_value,period_label) "
+        "VALUES(1,'Dashboard test',100000,'مهر 1405')"
+    )
+    conn.execute(
+        "INSERT INTO kpi(project_id,physical_progress,revenue,cost,balance,revenue_progress) "
+        "VALUES(1,0.1426,679000,433000,246000,0.15)"
+    )
+    conn.execute(
+        "INSERT INTO discrepancy(project_id,title,detail,severity,source) "
+        "VALUES(1,?,?,?,'EXCEL')",
+        (
+            "مغایرت هزینه خلاصه و جزئیات",
+            "اختلاف 12,326,556,667 ریال بین خلاصه و ریز هزینه‌ها.",
+            "HIGH",
+        ),
+    )
+    conn.execute(
+        "INSERT INTO discrepancy(project_id,title,detail,severity,source) "
+        "VALUES(1,?,?,?,'EXCEL')",
+        ("مورد تطبیق کم‌اهمیت‌تر", "شرح آزمایشی", "MEDIUM"),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(ui, "connect", lambda: db_connect(db_path))
+    page = ui.Dashboard()
+    labels = [label.text() for label in page.findChildren(QLabel)]
+    detailed_label = next(
+        label for label in labels
+        if "اختلاف 12,326,556,667 ریال" in label
+    )
+    assert "مغایرت هزینه خلاصه و جزئیات" in labels[labels.index(detailed_label) - 1]
+    assert "[HIGH]" in labels[labels.index(detailed_label) - 1]
+
+    visible_discrepancy_titles = [
+        label for label in labels
+        if label.startswith("• [") and ("مغایرت هزینه" in label or "کم‌اهمیت‌تر" in label)
+    ]
+    assert visible_discrepancy_titles[0].startswith("• [HIGH]")
+    assert visible_discrepancy_titles[1].startswith("• [MEDIUM]")
+
+    page.close()
+    assert app is not None
+
+
+
+def test_activity_record_dialog_groups_fields_into_clear_sections():
+    app = QApplication.instance() or QApplication([])
+    dialog = modules.RecordDialog(
+        "افزودن فعالیت",
+        modules.ACTIVITY_FIELDS,
+    )
+
+    from PySide6.QtWidgets import QGroupBox, QLineEdit
+
+    sections = [group.title() for group in dialog.findChildren(QGroupBox)]
+    assert sections == [
+        "۱. مشخصات و محل اجرا",
+        "۲. مقادیر و واحد",
+        "۳. زمان‌بندی",
+    ]
+    assert set(dialog.inputs) == {
+        "position", "zone", "title", "quantity", "unit",
+        "start_date", "finish_date", "duration_days", "daily_target",
+    }
+    assert isinstance(dialog.inputs["start_date"][0], QLineEdit)
+    assert "1405/07/17" in dialog.inputs["start_date"][0].toolTip()
+
+    dialog.close()
+    assert app is not None
+
+
+
+def test_activity_workspace_shows_dated_histories_in_separate_tabs(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db_path = tmp_path / "activity-workspace.db"
+    conn = db_connect(db_path)
+    conn.execute(
+        "INSERT INTO project(id,name,contract_value) VALUES(1,'Workspace test',100000)"
+    )
+    activity_id = conn.execute(
+        """
+        INSERT INTO activity(
+            project_id,row_no,position,zone,title,unit,quantity,remaining_qty,
+            start_date,finish_date,source
+        ) VALUES(1,7,'تونل ۴','خط شرقی','بتن‌ریزی اسلب','مترمکعب',100,100,
+                 '2026-10-01','2026-10-10','MANUAL')
+        """
+    ).lastrowid
+    conn.execute(
+        "INSERT INTO activity_daily_plan(activity_id,plan_date,quantity,source) "
+        "VALUES(?,'2026-10-02',10,'MANUAL')",
+        (activity_id,),
+    )
+    conn.execute(
+        "INSERT INTO activity_daily_actual(activity_id,actual_date,quantity,source,notes) "
+        "VALUES(?,'2026-10-03',8,'MANUAL','بتن‌ریزی جبهه شرقی')",
+        (activity_id,),
+    )
+    conn.execute(
+        "INSERT INTO cost_entry(project_id,activity_id,period,category,amount,source) "
+        "VALUES(1,?,'مهر 1405','بودجه هزینه',5000,'MANUAL')",
+        (activity_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO actual_finance_entry(
+            project_id,activity_id,entry_date,period,entry_type,category,amount,source
+        ) VALUES(1,?,'2026-10-04','مهر 1405','COST','هزینه حمل',700,'MANUAL')
+        """,
+        (activity_id,),
+    )
+    conn.execute(
+        "INSERT INTO revenue_entry(project_id,activity_id,period,category,amount,source) "
+        "VALUES(1,?,'مهر 1405','درآمد مبنا',12000,'MANUAL')",
+        (activity_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO actual_finance_entry(
+            project_id,activity_id,entry_date,period,entry_type,category,amount,source
+        ) VALUES(1,?,'2026-10-05','مهر 1405','REVENUE','درآمد ثبت‌شده',900,'MANUAL')
+        """,
+        (activity_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(modules, "connect", lambda: db_connect(db_path))
+    dialog = modules.ActivityWorkspaceDialog(activity_id, project_id=1)
+
+    assert dialog.tabs.count() == 4
+    assert [dialog.tabs.tabText(i) for i in range(4)] == [
+        "برنامه اجرایی", "عملکرد روزانه", "هزینه", "درآمد"
+    ]
+    assert dialog.tab_specs["برنامه اجرایی"]["table"].rowCount() == 1
+    assert dialog.tab_specs["عملکرد روزانه"]["table"].rowCount() == 1
+    assert dialog.tab_specs["هزینه"]["table"].rowCount() == 2
+    assert dialog.tab_specs["درآمد"]["table"].rowCount() == 2
+    assert "مبلغ مبنا/تخصیص‌یافته: 5,000" in dialog.tab_specs["هزینه"]["summary"].text()
+    assert "هزینه واقعی ثبت‌شده: 700" in dialog.tab_specs["هزینه"]["summary"].text()
+
+    dialog.close()
+    assert app is not None

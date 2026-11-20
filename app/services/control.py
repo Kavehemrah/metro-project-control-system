@@ -5,6 +5,14 @@ import sqlite3
 from datetime import date, timedelta
 from typing import Iterable
 
+from app.services.work_calendar import (
+    day_index,
+    finish_date,
+    parse_date,
+    project_holidays,
+    shift_days,
+)
+
 
 def planned_actual_totals(
     conn: sqlite3.Connection, activity_id: int
@@ -16,7 +24,16 @@ def planned_actual_totals(
     window; all manual actuals still contribute to cumulative progress.
     """
     planned = conn.execute(
-        "SELECT COALESCE(SUM(quantity), 0) FROM activity_daily_plan WHERE activity_id=?",
+        """
+        SELECT COALESCE(SUM(p.quantity), 0)
+        FROM activity_daily_plan p
+        JOIN activity a ON a.id=p.activity_id
+        WHERE p.activity_id=?
+          AND NOT EXISTS (
+              SELECT 1 FROM calendar_holiday h
+              WHERE h.project_id=a.project_id AND h.holiday_date=p.plan_date
+          )
+        """,
         (activity_id,),
     ).fetchone()[0]
 
@@ -32,9 +49,14 @@ def planned_actual_totals(
 
     plan_window = conn.execute(
         """
-        SELECT MIN(plan_date) AS first_date, MAX(plan_date) AS last_date
-        FROM activity_daily_plan
-        WHERE activity_id=?
+        SELECT MIN(p.plan_date) AS first_date, MAX(p.plan_date) AS last_date
+        FROM activity_daily_plan p
+        JOIN activity a ON a.id=p.activity_id
+        WHERE p.activity_id=?
+          AND NOT EXISTS (
+              SELECT 1 FROM calendar_holiday h
+              WHERE h.project_id=a.project_id AND h.holiday_date=p.plan_date
+          )
         """,
         (activity_id,),
     ).fetchone()
@@ -72,7 +94,7 @@ def planned_actual_totals(
 
 def activity_control(conn: sqlite3.Connection, activity_id: int) -> dict:
     row = conn.execute(
-        "SELECT quantity, remaining_qty, daily_target, start_date, finish_date FROM activity WHERE id=?",
+        "SELECT quantity, remaining_qty, daily_target, start_date, finish_date, project_id FROM activity WHERE id=?",
         (activity_id,),
     ).fetchone()
     if row is None:
@@ -101,6 +123,11 @@ def activity_control(conn: sqlite3.Connection, activity_id: int) -> dict:
 
 def update_activity_rollup(conn: sqlite3.Connection, activity_id: int) -> dict:
     control = activity_control(conn, activity_id)
+    activity = conn.execute(
+        "SELECT project_id FROM activity WHERE id=?", (activity_id,)
+    ).fetchone()
+    holidays = project_holidays(conn, activity["project_id"]) if activity else ()
+    excluded = {item.isoformat() for item in holidays}
     actual_days = conn.execute(
         """
         SELECT actual_date, quantity
@@ -112,23 +139,34 @@ def update_activity_rollup(conn: sqlite3.Connection, activity_id: int) -> dict:
     ).fetchall()
     forecast_date = None
     if actual_days:
-        try:
-            last_actual_date = date.fromisoformat(str(actual_days[-1]["actual_date"])[:10])
-        except ValueError:
-            last_actual_date = None
-        if last_actual_date is not None and control["remaining_qty"] <= 0:
+        last_actual_date = parse_date(actual_days[-1]["actual_date"])
+        if last_actual_date is None:
+            actual_days = []
+        if actual_days and control["remaining_qty"] <= 0:
             forecast_date = last_actual_date
-        elif last_actual_date is not None and control["remaining_qty"] > 0:
-            # Average production over days with recorded work; this forecast
-            # uses calendar days because no working-day calendar is configured.
-            quantities = [float(row["quantity"] or 0) for row in actual_days]
-            actual_daily_rate = sum(quantities) / len(quantities)
-            if actual_daily_rate > 0:
-                forecast_date = forecast_finish(
-                    last_actual_date + timedelta(days=1),
-                    control["remaining_qty"],
-                    actual_daily_rate,
-                )
+        elif actual_days:
+            valid_days = [
+                item for item in actual_days
+                if parse_date(item["actual_date"]) is not None
+                and parse_date(item["actual_date"]).isoformat() not in excluded
+            ]
+            if valid_days:
+                first = parse_date(valid_days[0]["actual_date"])
+                last = parse_date(valid_days[-1]["actual_date"])
+                scheduled_count = day_index(first, last, holidays) + 1
+                produced = sum(max(0.0, float(item["quantity"] or 0)) for item in valid_days)
+                rate = produced / scheduled_count if scheduled_count > 0 else 0.0
+                if rate <= 0:
+                    rate = max(0.0, float(conn.execute(
+                        "SELECT daily_target FROM activity WHERE id=?", (activity_id,)
+                    ).fetchone()[0] or 0))
+                if rate > 0:
+                    remaining_days = max(1, math.ceil(control["remaining_qty"] / rate))
+                    forecast_date = finish_date(
+                        shift_days(last_actual_date, 1, holidays),
+                        remaining_days,
+                        holidays,
+                    )
 
     conn.execute(
         """
@@ -271,6 +309,53 @@ def forecast_finish(
     days = max(1, math.ceil(remaining_qty / rate))
     return (start or date.today()) + timedelta(days=days - 1)
 
+
+
+def project_progress_summary(conn: sqlite3.Connection, project_id: int = 1) -> dict:
+    """Calculate a live, revenue-weighted activity progress indicator.
+
+    Activity quantities can use incompatible units (metres, pieces, cubic metres,
+    etc.), so they must not be summed into a project-wide physical quantity.
+    This indicator weights each activity's progress by its Excel-derived
+    activity revenue basis and reports how many activities have such a basis.
+    It is a management proxy, not a substitute for the workbook's certified KPI.
+    """
+    activities = conn.execute(
+        "SELECT id FROM activity WHERE project_id=? ORDER BY row_no, id",
+        (project_id,),
+    ).fetchall()
+    weights = {
+        int(row["activity_id"]): float(row["basis"] or 0)
+        for row in conn.execute(
+            """
+            SELECT activity_id, SUM(amount) AS basis
+            FROM revenue_entry
+            WHERE project_id=? AND source='EXCEL_ACTIVITY' AND activity_id IS NOT NULL
+            GROUP BY activity_id
+            """,
+            (project_id,),
+        ).fetchall()
+    }
+    weighted_total = 0.0
+    basis_total = 0.0
+    weighted_count = 0
+    for activity in activities:
+        basis = weights.get(int(activity["id"]), 0.0)
+        if basis <= 0:
+            continue
+        control = activity_control(conn, int(activity["id"]))
+        progress = min(100.0, max(0.0, float(control["physical_progress_pct"] or 0)))
+        weighted_total += basis * progress / 100.0
+        basis_total += basis
+        weighted_count += 1
+
+    return {
+        "progress_pct": weighted_total / basis_total * 100.0 if basis_total else None,
+        "basis_total": basis_total,
+        "activity_count": len(activities),
+        "weighted_activity_count": weighted_count,
+        "coverage_pct": weighted_count / len(activities) * 100.0 if activities else 0.0,
+    }
 
 def aggregate_activity_control(conn: sqlite3.Connection, project_id: int = 1) -> list[dict]:
     rows = conn.execute(

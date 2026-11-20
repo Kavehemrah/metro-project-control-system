@@ -38,6 +38,9 @@ def test_critical_activities_prioritize_status_and_delay():
         CREATE TABLE activity_daily_actual (
             activity_id INTEGER, actual_date TEXT, quantity REAL, source TEXT DEFAULT 'MANUAL', notes TEXT
         );
+        CREATE TABLE calendar_holiday (
+            id INTEGER PRIMARY KEY, project_id INTEGER, holiday_date TEXT, title TEXT
+        );
         CREATE TABLE activity_period (
             activity_id INTEGER, period TEXT, planned_qty REAL, actual_qty REAL, source TEXT DEFAULT 'EXCEL'
         );
@@ -72,6 +75,46 @@ def test_critical_activities_prioritize_status_and_delay():
     assert updated_control["achievement_pct"] < 90
     assert updated_status == "CRITICAL"
     conn.close()
+
+
+def test_project_holiday_is_excluded_from_daily_plan_but_not_real_actuals(tmp_path: Path):
+    conn = connect(tmp_path / "holiday-control.db")
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Holiday control')")
+    activity_id = conn.execute(
+        """
+        INSERT INTO activity(
+            project_id,title,quantity,remaining_qty,baseline_actual_qty,actual_qty,
+            start_date,finish_date,duration_days,daily_target,source
+        ) VALUES(1,'Test activity',100,100,0,0,'2026-10-15','2026-10-17',2,10,'MANUAL')
+        """
+    ).lastrowid
+    conn.executemany(
+        "INSERT INTO activity_daily_plan(activity_id,plan_date,quantity,source) VALUES(?,?,?,'MANUAL')",
+        [
+            (activity_id, "2026-10-15", 10),
+            (activity_id, "2026-10-16", 20),
+            (activity_id, "2026-10-17", 30),
+        ],
+    )
+    conn.execute(
+        "INSERT INTO calendar_holiday(project_id,holiday_date,title) VALUES(1,'2026-10-16','Project holiday')"
+    )
+    conn.executemany(
+        "INSERT INTO activity_daily_actual(activity_id,actual_date,quantity,source) VALUES(?,?,?,'MANUAL')",
+        [
+            (activity_id, "2026-10-15", 5),
+            (activity_id, "2026-10-16", 10),
+            (activity_id, "2026-10-17", 15),
+        ],
+    )
+
+    control = activity_control(conn, activity_id)
+    conn.close()
+
+    assert control["planned_qty"] == 40
+    # Recorded production remains real even if the date is marked as a holiday.
+    assert control["actual_qty"] == 30
+    assert control["period_actual_qty"] == 30
 
 
 def test_formula_scanner_reports_missing_cached_results():
