@@ -955,6 +955,61 @@ class ActivityPage(RecordPage):
         finally:
             self._updating_filter_choices = False
 
+    def _dialog(self, title, initial=None):
+        dialog = super()._dialog if False else None
+        form = RecordDialog(title, self.fields, initial, self)
+        conn = connect()
+        try:
+            suggestions = {
+                "position": [
+                    row[0] for row in conn.execute(
+                        "SELECT DISTINCT position FROM activity "
+                        "WHERE project_id=? AND COALESCE(position,'')<>'' ORDER BY position",
+                        (self.project_id,),
+                    ).fetchall()
+                ],
+                "zone": [
+                    row[0] for row in conn.execute(
+                        "SELECT DISTINCT zone FROM activity "
+                        "WHERE project_id=? AND COALESCE(zone,'')<>'' ORDER BY zone",
+                        (self.project_id,),
+                    ).fetchall()
+                ],
+                "unit": [
+                    row[0] for row in conn.execute(
+                        "SELECT DISTINCT unit FROM activity "
+                        "WHERE project_id=? AND COALESCE(unit,'')<>'' ORDER BY unit",
+                        (self.project_id,),
+                    ).fetchall()
+                ],
+            }
+        finally:
+            conn.close()
+
+        for key, values in suggestions.items():
+            widget = form.inputs.get(key, (None,))[0]
+            if isinstance(widget, QLineEdit) and values:
+                completer = QCompleter(values, widget)
+                completer.setCaseSensitivity(Qt.CaseInsensitive)
+                completer.setFilterMode(Qt.MatchContains)
+                widget.setCompleter(completer)
+                widget.setToolTip("برای جلوگیری از تفاوت نوشتاری، از پیشنهادهای ثبت‌شده استفاده کنید.")
+        for key in ("start_date", "finish_date"):
+            widget = form.inputs.get(key, (None,))[0]
+            if isinstance(widget, QLineEdit):
+                widget.setToolTip(
+                    "تاریخ شمسی را به شکل 1405/07/17 وارد کنید؛ تاریخ‌ها هنگام ذخیره اعتبارسنجی می‌شوند."
+                )
+
+        if form.exec() != QDialog.Accepted:
+            return None
+        values = form.values()
+        for key, label, kind, _options in self.fields:
+            if kind == "text" and not values[key]:
+                QMessageBox.warning(self, "ورودی ناقص", f"فیلد «{label}» الزامی است.")
+                return None
+        return values
+
     def prepare_values(self, values):
         for key in ("start_date", "finish_date"):
             values[key] = normalize_date(values[key]) if values.get(key) else None
