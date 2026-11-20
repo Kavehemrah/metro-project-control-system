@@ -393,6 +393,12 @@ class ActivityPage(RecordPage):
             )
             self.quick_actual_button.clicked.connect(self.record_actual_quick)
             self.layout().itemAt(2).layout().insertWidget(0, self.quick_actual_button)
+            self.batch_actual_button = QPushButton("ثبت چند روز عملکرد")
+            self.batch_actual_button.setToolTip(
+                "ثبت عملکرد یک فعالیت برای چند تاریخ در یک مرحله"
+            )
+            self.batch_actual_button.clicked.connect(self.record_actual_batch)
+            self.layout().itemAt(2).layout().insertWidget(1, self.batch_actual_button)
         else:
             self.add_button.setText("افزودن فعالیت")
             self.edit_button.setText("ویرایش فعالیت")
@@ -1361,6 +1367,161 @@ class ActivityPage(RecordPage):
         finally:
             conn.close()
         self.refresh()
+
+    def record_actual_batch(self):
+        """Enter multiple dated actual quantities for the selected activity atomically."""
+        activity = self._selected_record()
+        if activity is None:
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"ثبت چندروزه عملکرد: {activity['title']}")
+        dialog.setLayoutDirection(Qt.RightToLeft)
+        dialog.resize(720, 440)
+        root = QVBoxLayout(dialog)
+        note = QLabel(
+            f"برای فعالیت «{activity['title']}» مقادیر هر روز را وارد کنید. "
+            f"واحد: {activity['unit'] or '—'}. ردیف‌های خالی نادیده گرفته می‌شوند. "
+            "هر تاریخ برای هر فعالیت فقط یک رکورد دارد؛ در صورت وجود رکورد قبلی، کل ثبت انجام نمی‌شود."
+        )
+        note.setWordWrap(True)
+        root.addWidget(note)
+
+        table = QTableWidget(5, 3)
+        _configure_table(table, ["تاریخ عملکرد (شمسی)", f"مقدار ({activity['unit'] or ''})", "توضیحات"])
+        table.setEditTriggers(QAbstractItemView.AllEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setColumnWidth(0, 170)
+        table.setColumnWidth(1, 150)
+        table.setItem(0, 0, QTableWidgetItem(format_date(date.today().isoformat())))
+        for row in range(table.rowCount()):
+            for column in range(table.columnCount()):
+                if table.item(row, column) is None:
+                    table.setItem(row, column, QTableWidgetItem(""))
+        root.addWidget(table)
+
+        row_actions = QHBoxLayout()
+        add_row = QPushButton("افزودن ردیف")
+        remove_row = QPushButton("حذف ردیف انتخاب‌شده")
+        add_row.clicked.connect(lambda: table.insertRow(table.rowCount()))
+        def remove_batch_row():
+            row = table.currentRow()
+            if row >= 0:
+                table.removeRow(row)
+            else:
+                QMessageBox.information(dialog, "انتخاب ردیف", "ابتدا ردیف موردنظر را انتخاب کنید.")
+        remove_row.clicked.connect(remove_batch_row)
+        row_actions.addWidget(add_row)
+        row_actions.addWidget(remove_row)
+        row_actions.addStretch()
+        root.addLayout(row_actions)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        root.addWidget(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        entries = []
+        seen_dates = set()
+        for row in range(table.rowCount()):
+            date_item = table.item(row, 0)
+            qty_item = table.item(row, 1)
+            notes_item = table.item(row, 2)
+            raw_date = date_item.text().strip() if date_item else ""
+            raw_qty = qty_item.text().strip() if qty_item else ""
+            notes = notes_item.text().strip() if notes_item else ""
+            if not raw_date and not raw_qty and not notes:
+                continue
+            if not raw_date or not raw_qty:
+                QMessageBox.warning(
+                    self, "ردیف ناقص",
+                    f"در ردیف {row + 1} تاریخ و مقدار هر دو الزامی هستند.",
+                )
+                return
+            try:
+                actual_date = normalize_date(raw_date)
+                quantity = float(raw_qty.replace(",", ""))
+            except (ValueError, TypeError):
+                QMessageBox.warning(
+                    self, "مقدار نامعتبر",
+                    f"تاریخ یا مقدار ردیف {row + 1} معتبر نیست. تاریخ شمسی و مقدار عددی وارد کنید.",
+                )
+                return
+            if quantity <= 0:
+                QMessageBox.warning(self, "مقدار نامعتبر", f"مقدار ردیف {row + 1} باید بیشتر از صفر باشد.")
+                return
+            if actual_date in seen_dates:
+                QMessageBox.warning(self, "تاریخ تکراری", f"تاریخ {format_date(actual_date)} دوبار در فرم وارد شده است.")
+                return
+            seen_dates.add(actual_date)
+            entries.append((actual_date, quantity, notes))
+
+        if not entries:
+            QMessageBox.information(self, "بدون داده", "حداقل یک ردیف تاریخ و مقدار لازم است.")
+            return
+
+        conn = connect()
+        try:
+            existing = []
+            for actual_date, _quantity, _notes in entries:
+                duplicate = conn.execute(
+                    "SELECT source FROM activity_daily_actual WHERE activity_id=? AND actual_date=?",
+                    (activity["id"], actual_date),
+                ).fetchone()
+                if duplicate is not None:
+                    source = "Excel" if duplicate["source"] != "MANUAL" else "دستی"
+                    existing.append(f"{format_date(actual_date)} ({source})")
+            if existing:
+                QMessageBox.warning(
+                    self, "تداخل تاریخ",
+                    "برای تاریخ‌های زیر قبلاً عملکرد ثبت شده است؛ هیچ‌یک از ردیف‌ها ذخیره نشد:\n"
+                    + "، ".join(existing),
+                )
+                return
+
+            control = activity_control(conn, activity["id"])
+            proposed_total = control["cumulative_actual_qty"] + sum(item[1] for item in entries)
+            if proposed_total > float(activity["quantity"] or 0):
+                answer = QMessageBox.question(
+                    self,
+                    "هشدار مقدار تجمعی",
+                    f"عملکرد تجمعی پس از ثبت {proposed_total:,.2f} از حجم کل "
+                    f"{float(activity['quantity'] or 0):,.2f} بیشتر می‌شود. ثبت اضافه‌کار تأیید شود؟",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    return
+
+            for actual_date, quantity, notes in entries:
+                conn.execute(
+                    """
+                    INSERT INTO activity_daily_actual(
+                        activity_id,actual_date,quantity,source,notes
+                    ) VALUES(?,?,?,'MANUAL',?)
+                    """,
+                    (activity["id"], actual_date, quantity, notes),
+                )
+            update_activity_rollup(conn, activity["id"])
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            QMessageBox.warning(
+                self, "ثبت ناموفق",
+                "به دلیل تداخل یا محدودیت داده، هیچ‌یک از ردیف‌ها ذخیره نشد.",
+            )
+            return
+        finally:
+            conn.close()
+
+        self.refresh()
+        QMessageBox.information(
+            self, "ثبت عملکرد انجام شد",
+            f"{len(entries)} رکورد برای «{activity['title']}» با موفقیت ثبت شد.",
+        )
 
     def record_actual_quick(self):
         """Guided daily actual entry: choose the activity inside the form."""
