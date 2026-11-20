@@ -285,6 +285,14 @@ def test_activity_workspace_shows_dated_histories_in_separate_tabs(monkeypatch, 
         (activity_id,),
     )
     conn.execute(
+        """
+        INSERT INTO activity_period(
+            activity_id,period,planned_qty,actual_qty,cumulative_qty,remaining_qty,achievement_pct,source
+        ) VALUES(?,'مهر 1405',10,12,12,88,120,'EXCEL')
+        """,
+        (activity_id,),
+    )
+    conn.execute(
         "INSERT INTO cost_entry(project_id,activity_id,period,category,amount,source) "
         "VALUES(1,?,'مهر 1405','بودجه هزینه',5000,'MANUAL')",
         (activity_id,),
@@ -321,15 +329,27 @@ def test_activity_workspace_shows_dated_histories_in_separate_tabs(monkeypatch, 
         "عملکرد روزانه", "هزینه", "درآمد"
     ]
     assert "برنامه اجرایی" not in dialog.tab_specs
-    assert dialog.tab_specs["عملکرد روزانه"]["table"].rowCount() == 1
-    assert dialog.tab_specs["هزینه"]["table"].rowCount() == 1
-    assert dialog.tab_specs["درآمد"]["table"].rowCount() == 1
-    assert "بودجه/مبلغ مبنای تخصیص‌یافته: 5,000" in dialog.tab_specs["هزینه"]["summary"].text()
+    daily_table = dialog.tab_specs["عملکرد روزانه"]["table"]
+    cost_table = dialog.tab_specs["هزینه"]["table"]
+    revenue_table = dialog.tab_specs["درآمد"]["table"]
+    assert daily_table.rowCount() == 2
+    daily_sources = [daily_table.item(row, 3).text() for row in range(daily_table.rowCount())]
+    assert "Excel - عملکرد دوره‌ای" in daily_sources
+    assert "MANUAL" in daily_sources
+    assert cost_table.rowCount() == 2
+    cost_sources = [cost_table.item(row, 3).text() for row in range(cost_table.rowCount())]
+    assert any("مبنای هزینه MANUAL" in value for value in cost_sources)
+    assert any("واقعی MANUAL" in value for value in cost_sources)
+    assert "مبلغ مبنای هزینه: 5,000" in dialog.tab_specs["هزینه"]["summary"].text()
     assert "هزینه واقعی ثبت‌شده: 700" in dialog.tab_specs["هزینه"]["summary"].text()
-    assert dialog.tab_specs["درآمد"]["table"].item(0, 2).text() == "960"
-    assert "درآمد تجمعی محاسبه‌شده: 960" in dialog.tab_specs["درآمد"]["summary"].text()
-    assert dialog.tab_specs["درآمد"]["table"].isEnabled()
-    assert dialog.tab_specs["درآمد"]["table"].rowCount() == 1
+    assert revenue_table.rowCount() == 4
+    revenue_sources = [revenue_table.item(row, 3).text() for row in range(revenue_table.rowCount())]
+    assert "محاسباتی - روزانه" in revenue_sources
+    assert "محاسباتی - دوره‌ای" in revenue_sources
+    assert any("مبنای درآمد / تخصیص MANUAL" in value for value in revenue_sources)
+    assert any("ثبت درآمد قبلی MANUAL" in value for value in revenue_sources)
+    assert "درآمد محاسبه‌شده از عملکردهای قبلی و روزانه: 2,400" in dialog.tab_specs["درآمد"]["summary"].text()
+    assert revenue_table.isEnabled()
 
     dialog.close()
     assert app is not None
