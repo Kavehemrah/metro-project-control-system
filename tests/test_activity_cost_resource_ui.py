@@ -316,16 +316,84 @@ def test_activity_workspace_shows_dated_histories_in_separate_tabs(monkeypatch, 
     monkeypatch.setattr(modules, "connect", lambda: db_connect(db_path))
     dialog = modules.ActivityWorkspaceDialog(activity_id, project_id=1)
 
-    assert dialog.tabs.count() == 4
-    assert [dialog.tabs.tabText(i) for i in range(4)] == [
-        "برنامه اجرایی", "عملکرد روزانه", "هزینه", "درآمد"
+    assert dialog.tabs.count() == 3
+    assert [dialog.tabs.tabText(i) for i in range(3)] == [
+        "عملکرد روزانه", "هزینه", "درآمد"
     ]
-    assert dialog.tab_specs["برنامه اجرایی"]["table"].rowCount() == 1
+    assert "برنامه اجرایی" not in dialog.tab_specs
     assert dialog.tab_specs["عملکرد روزانه"]["table"].rowCount() == 1
-    assert dialog.tab_specs["هزینه"]["table"].rowCount() == 2
-    assert dialog.tab_specs["درآمد"]["table"].rowCount() == 2
-    assert "مبلغ مبنا/تخصیص‌یافته: 5,000" in dialog.tab_specs["هزینه"]["summary"].text()
+    assert dialog.tab_specs["هزینه"]["table"].rowCount() == 1
+    assert dialog.tab_specs["درآمد"]["table"].rowCount() == 1
+    assert "بودجه/مبلغ مبنای تخصیص‌یافته: 5,000" in dialog.tab_specs["هزینه"]["summary"].text()
     assert "هزینه واقعی ثبت‌شده: 700" in dialog.tab_specs["هزینه"]["summary"].text()
+    assert dialog.tab_specs["درآمد"]["table"].item(0, 2).text() == "960"
+    assert "درآمد تجمعی محاسبه‌شده: 960" in dialog.tab_specs["درآمد"]["summary"].text()
+    assert not dialog.tab_specs["درآمد"]["table"].isEnabled() is False
+    assert dialog.tab_specs["درآمد"]["table"].rowCount() == 1
 
     dialog.close()
+    assert app is not None
+
+
+
+def test_activity_row_click_opens_correct_workspace_and_shows_daily_finance_totals(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db_path = tmp_path / "activity-row-click.db"
+    conn = db_connect(db_path)
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Row click test')")
+    activity_id = conn.execute(
+        """
+        INSERT INTO activity(
+            project_id,row_no,position,zone,title,unit,quantity,remaining_qty,source
+        ) VALUES(1,1,'تونل ۴','خط شرقی','بتن‌ریزی اسلب','مترمکعب',100,100,'MANUAL')
+        """
+    ).lastrowid
+    conn.execute(
+        """
+        INSERT INTO activity_daily_actual(activity_id,actual_date,quantity,source,notes)
+        VALUES(?,'2026-10-03',8,'MANUAL','عملکرد آزمایشی')
+        """,
+        (activity_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO revenue_entry(project_id,activity_id,period,category,amount,source)
+        VALUES(1,?,'کل پروژه','درآمد فعالیت',12000,'EXCEL_ACTIVITY')
+        """,
+        (activity_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO actual_finance_entry(
+            project_id,activity_id,entry_date,entry_type,category,amount,source
+        ) VALUES(1,?,'2026-10-04','COST','هزینه حمل',700,'MANUAL')
+        """,
+        (activity_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(modules, "connect", lambda: db_connect(db_path))
+    opened = {}
+
+    class FakeWorkspace:
+        def __init__(self, selected_activity_id, project_id, parent):
+            opened["activity_id"] = selected_activity_id
+            opened["project_id"] = project_id
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(modules, "ActivityWorkspaceDialog", FakeWorkspace)
+    page = modules.ActivityPage("عملکرد روزانه", progress_only=True)
+
+    assert page.table.item(0, 0).data(modules.Qt.UserRole) == activity_id
+    assert page.table.item(0, 15).text() == "2026/10/03"
+    assert page.table.item(0, 16).text() == "700"
+    assert page.table.item(0, 17).text() == "960"
+
+    page.table.cellClicked.emit(0, 0)
+    assert opened == {"activity_id": activity_id, "project_id": 1}
+
+    page.close()
     assert app is not None
