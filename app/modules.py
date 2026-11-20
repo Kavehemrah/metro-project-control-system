@@ -721,8 +721,37 @@ class ActivityWorkspaceDialog(QDialog):
         selected = self._selected_row(spec)
         if not selected:
             return
-        if selected["source"] != "MANUAL":
-            QMessageBox.information(self, "رکورد مرجع", "رکورد واردشده از Excel فقط قابل مشاهده است.")
+        if selected["source"] == "EXCEL_PERIOD":
+            conn = connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM activity_period WHERE id=? AND activity_id=? AND source='EXCEL'",
+                    (-int(selected["id"]), self.activity_id),
+                ).fetchone()
+            finally:
+                conn.close()
+            if row:
+                form = RecordDialog(
+                    "ویرایش عملکرد دوره‌ای Excel",
+                    [
+                        ("planned_qty", "مقدار برنامه دوره", "number", {"minimum": 0, "decimals": 2}),
+                        ("actual_qty", "مقدار عملکرد دوره", "number", {"minimum": 0, "decimals": 2}),
+                    ],
+                    dict(row), self,
+                )
+                if form.exec() != QDialog.Accepted:
+                    return
+                values = form.values()
+                conn = connect()
+                try:
+                    conn.execute(
+                        "UPDATE activity_period SET planned_qty=?,actual_qty=? WHERE id=? AND activity_id=? AND source='EXCEL'",
+                        (values["planned_qty"], values["actual_qty"], row["id"], self.activity_id),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                self.refresh()
             return
         conn = connect()
         try:
@@ -784,19 +813,30 @@ class ActivityWorkspaceDialog(QDialog):
         selected = self._selected_row(spec)
         if not selected:
             return
-        if selected["source"] != "MANUAL":
-            QMessageBox.information(self, "رکورد مرجع", "رکورد Excel حذف نمی‌شود.")
+        is_excel_period = selected["source"] == "EXCEL_PERIOD"
+        if selected["source"] != "MANUAL" and not is_excel_period:
+            QMessageBox.information(self, "رکورد مرجع", "این نوع سابقه از این بخش قابل حذف نیست.")
             return
-        if QMessageBox.question(self, "تأیید حذف", "رکورد انتخاب‌شده حذف شود؟", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+        confirmation = (
+            "این عملکرد دوره‌ای واردشده از Excel حذف شود؟"
+            if is_excel_period else "رکورد انتخاب‌شده حذف شود؟"
+        )
+        if QMessageBox.question(self, "تأیید حذف", confirmation, QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         conn = connect()
         try:
-            conn.execute(
-                f"DELETE FROM {spec['table_name']} WHERE id=? AND activity_id=? AND source='MANUAL'",
-                (selected["id"], self.activity_id),
-            )
-            if spec["table_name"] == "activity_daily_actual":
-                update_activity_rollup(conn, self.activity_id)
+            if is_excel_period:
+                conn.execute(
+                    "DELETE FROM activity_period WHERE id=? AND activity_id=? AND source='EXCEL'",
+                    (-int(selected["id"]), self.activity_id),
+                )
+            else:
+                conn.execute(
+                    f"DELETE FROM {spec['table_name']} WHERE id=? AND activity_id=? AND source='MANUAL'",
+                    (selected["id"], self.activity_id),
+                )
+                if spec["table_name"] == "activity_daily_actual":
+                    update_activity_rollup(conn, self.activity_id)
             conn.commit()
         finally:
             conn.close()
@@ -846,7 +886,7 @@ class ActivityWorkspaceDialog(QDialog):
                     )
                 else:
                     conn.execute(
-                        f"UPDATE {table_name} SET period=?,category=?,amount=? WHERE id=? AND project_id=? AND activity_id=? AND source='MANUAL'",
+                        f"UPDATE {table_name} SET period=?,category=?,amount=? WHERE id=? AND project_id=? AND activity_id=?",
                         (values["period"], values["category"], values["amount"], existing["id"], self.project_id, self.activity_id),
                     )
             else:
@@ -895,9 +935,6 @@ class ActivityWorkspaceDialog(QDialog):
         selected = self._selected_row(spec)
         if not selected:
             return
-        if selected["source"] != "MANUAL":
-            QMessageBox.information(self, "رکورد مرجع", "رکورد Excel فقط قابل مشاهده است.")
-            return
         table_name = selected["table_name"]
         conn = connect()
         try:
@@ -917,10 +954,11 @@ class ActivityWorkspaceDialog(QDialog):
         selected = self._selected_row(spec)
         if not selected:
             return
-        if selected["source"] != "MANUAL":
-            QMessageBox.information(self, "رکورد مرجع", "رکورد Excel حذف نمی‌شود.")
-            return
-        if QMessageBox.question(self, "تأیید حذف", "رکورد مالی انتخاب‌شده حذف شود؟", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+        if QMessageBox.question(
+            self, "تأیید حذف",
+            "رکورد مالی انتخاب‌شده حذف شود؟\nدر صورت Excel بودن، ردیف مرجع نیز از پایگاه داده حذف خواهد شد.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        ) != QMessageBox.Yes:
             return
         table_name = selected["table_name"]
         conn = connect()
@@ -928,7 +966,7 @@ class ActivityWorkspaceDialog(QDialog):
             conn.execute(
                 f"DELETE FROM {table_name} WHERE id=? AND project_id=? AND activity_id=?"
                 + (" AND entry_type=?" if table_name == "actual_finance_entry" else "")
-                + " AND source='MANUAL'",
+                ,
                 (selected["id"], self.project_id, self.activity_id, *([spec["entry_type"]] if table_name == "actual_finance_entry" else [])),
             )
             conn.commit()
