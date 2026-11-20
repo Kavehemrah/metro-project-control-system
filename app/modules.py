@@ -820,18 +820,9 @@ class ActivityPage(RecordPage):
             self.add_button.setText("ثبت برای فعالیت انتخاب‌شده")
             self.edit_button.setText("ویرایش عملکرد روزانه")
             self.delete_button.setText("حذف عملکرد روزانه")
-            self.quick_actual_button = QPushButton("ثبت سریع عملکرد")
-            self.quick_actual_button.setToolTip(
-                "ثبت عملکرد بدون نیاز به انتخاب قبلی فعالیت از جدول"
-            )
-            self.quick_actual_button.clicked.connect(self.record_actual_quick)
-            self.layout().itemAt(2).layout().insertWidget(0, self.quick_actual_button)
-            self.batch_actual_button = QPushButton("ثبت چند روز عملکرد")
-            self.batch_actual_button.setToolTip(
-                "ثبت عملکرد یک فعالیت برای چند تاریخ در یک مرحله"
-            )
-            self.batch_actual_button.clicked.connect(self.record_actual_batch)
-            self.layout().itemAt(2).layout().insertWidget(1, self.batch_actual_button)
+                self.add_button.hide()
+            self.edit_button.hide()
+            self.delete_button.hide()
         else:
             self.add_button.setText("افزودن فعالیت")
             self.edit_button.setText("ویرایش فعالیت")
@@ -875,8 +866,56 @@ class ActivityPage(RecordPage):
         self.search_filter.textChanged.connect(
             lambda _text: self.refresh(recalculate_schedule=False)
         )
+        filter_layout.addWidget(QLabel("وضعیت:"))
+        self.status_filter = QComboBox()
+        self.status_filter.addItem("همه وضعیت‌ها", "all")
+        self.status_filter.addItem("دارای تأخیر", "delayed")
+        self.status_filter.addItem("در حال اجرا", "active")
+        self.status_filter.addItem("تکمیل‌شده", "complete")
+        self.status_filter.addItem("شروع‌نشده", "not_started")
+        filter_layout.addWidget(self.status_filter)
+        filter_layout.addWidget(QLabel("مرتب‌سازی:"))
+        self.sort_filter = QComboBox()
+        self.sort_filter.addItem("ترتیب ردیف", "row")
+        self.sort_filter.addItem("بیشترین تأخیر", "delay")
+        self.sort_filter.addItem("بیشترین پیشرفت", "progress")
+        self.sort_filter.addItem("شرح فعالیت", "title")
+        self.sort_filter.addItem("پایان برنامه", "finish")
+        filter_layout.addWidget(self.sort_filter)
+        self.status_filter.currentIndexChanged.connect(
+            lambda _index: self.refresh(recalculate_schedule=False)
+        )
+        self.sort_filter.currentIndexChanged.connect(
+            lambda _index: self.refresh(recalculate_schedule=False)
+        )
+        self.open_workspace_button = QPushButton("باز کردن پرونده فعالیت")
+        self.open_workspace_button.clicked.connect(self.open_workspace)
+        self.layout().itemAt(2).layout().addWidget(self.open_workspace_button)
+        self.table.cellDoubleClicked.disconnect()
+        self.table.cellDoubleClicked.connect(self._open_workspace_from_row)
         self._updating_filter_choices = False
         self.refresh()
+
+    def _selected_record(self):
+        row_index = self.table.currentRow()
+        if row_index < 0:
+            QMessageBox.information(self, "انتخاب فعالیت", "ابتدا یک فعالیت را از فهرست انتخاب کنید.")
+            return None
+        first = self.table.item(row_index, 0)
+        activity_id = first.data(Qt.UserRole) if first is not None else None
+        return next((record for record in self.records if int(record["id"]) == int(activity_id)), None) if activity_id is not None else None
+
+    def _open_workspace_from_row(self, row, _column):
+        self.table.selectRow(row)
+        self.open_workspace()
+
+    def open_workspace(self):
+        activity = self._selected_record()
+        if activity is None:
+            return
+        dialog = ActivityWorkspaceDialog(activity["id"], self.project_id, self)
+        dialog.exec()
+        self.refresh(recalculate_schedule=False)
 
     def show_critical_path(self):
         conn = connect()
@@ -1496,6 +1535,7 @@ class ActivityPage(RecordPage):
                 selected_position = self.position_filter.currentData()
                 selected_activity = self.activity_filter.currentData()
                 search_text = self.search_filter.text().strip().casefold()
+                selected_status = self.status_filter.currentData() if hasattr(self, "status_filter") else "all"
                 self.records = [
                     row for row in base_records
                     if (selected_position is None or (row["position"] or "").strip() == selected_position)
@@ -1507,7 +1547,25 @@ class ActivityPage(RecordPage):
                             for key in ("position", "zone", "title")
                         ).casefold()
                     )
+                    and (
+                        selected_status == "all"
+                        or (selected_status == "delayed" and int(row["delay_days"] or 0) > 0)
+                        or (selected_status == "complete" and float(row["progress"] or 0) >= 1)
+                        or (selected_status == "not_started" and float(row["progress"] or 0) <= 0)
+                        or (selected_status == "active" and 0 < float(row["progress"] or 0) < 1)
+                    )
                 ]
+                sort_key = self.sort_filter.currentData() if hasattr(self, "sort_filter") else "row"
+                if sort_key == "delay":
+                    self.records.sort(key=lambda row: int(row["delay_days"] or 0), reverse=True)
+                elif sort_key == "progress":
+                    self.records.sort(key=lambda row: float(row["progress"] or 0), reverse=True)
+                elif sort_key == "title":
+                    self.records.sort(key=lambda row: str(row["title"] or "").casefold())
+                elif sort_key == "finish":
+                    self.records.sort(key=lambda row: str(row["finish_date"] or ""))
+                else:
+                    self.records.sort(key=lambda row: (row["row_no"] is None, row["row_no"] or 0, row["id"]))
             else:
                 self.records = base_records
             if hasattr(self, "schedule_notice") and schedule is not None:
@@ -1540,6 +1598,8 @@ class ActivityPage(RecordPage):
                 for column_index, value in enumerate(display_values):
                     item = QTableWidgetItem(str(value if value is not None else ""))
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    if column_index == 0:
+                        item.setData(Qt.UserRole, int(record["id"]))
                     self.table.setItem(row_index, column_index, item)
         finally:
             conn.close()
