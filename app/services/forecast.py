@@ -221,7 +221,6 @@ def calculate_schedule(
         # A dependency delay moves the finish by the same amount unless a later
         # observed productivity forecast already governs the activity.
         if initial_start and required_start and required_start > initial_start:
-            shift = required_start - initial_start
             required_finish = max(
                 required_finish or finish_date(required_start, duration, holidays),
                 finish_date(required_start, duration, holidays),
