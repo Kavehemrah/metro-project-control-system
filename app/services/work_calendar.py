@@ -77,3 +77,21 @@ def project_holidays(conn, project_id: int) -> tuple[date, ...]:
         (project_id,),
     ).fetchall()
     return tuple(day for row in rows if (day := parse_date(row["holiday_date"])) is not None)
+
+def count_scheduled_days(start, finish, holidays: Iterable = ()) -> int:
+    """Count non-holiday dates in an inclusive date range."""
+    first = normalize_workday(start, holidays, 1)
+    last = parse_date(finish)
+    if last is None:
+        raise ValueError("finish must be an ISO date or datetime.date")
+    excluded = {parse_date(item) for item in holidays}
+    excluded.discard(None)
+    if last < first:
+        return 1
+    count = 0
+    current = first
+    while current <= last:
+        if current not in excluded:
+            count += 1
+        current += timedelta(days=1)
+    return max(1, count)
