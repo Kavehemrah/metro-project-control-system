@@ -668,7 +668,7 @@ class ActivityWorkspaceDialog(QDialog):
                 if not values.get("period"):
                     QMessageBox.warning(self, "ورودی ناقص", "دوره و شرح الزامی است.")
                     return
-                if existing is None:
+                if existing is None or existing.get("id") is None:
                     conn.execute(
                         f"INSERT INTO {table_name}(project_id,activity_id,period,category,amount,source) VALUES(?,?,?,?,?,'MANUAL')",
                         (self.project_id, self.activity_id, values["period"], values["category"], values["amount"]),
@@ -3026,6 +3026,12 @@ class FinancePage(QWidget):
             ],
         )
         coverage_layout.addWidget(self.cost_coverage_table, 1)
+        self.open_activity_file_button = QPushButton("باز کردن پرونده فعالیت انتخاب‌شده")
+        self.open_activity_file_button.clicked.connect(self.open_selected_activity_file)
+        coverage_layout.addWidget(self.open_activity_file_button)
+        self.cost_coverage_table.cellDoubleClicked.connect(
+            lambda row, _column: (self.cost_coverage_table.selectRow(row), self.open_selected_activity_file())
+        )
 
         actual_title = QLabel("دفتر درآمد و هزینه واقعی")
         actual_title.setStyleSheet(f"font-size:17px;font-weight:600;color:{TEXT};")
@@ -3079,6 +3085,20 @@ class FinancePage(QWidget):
         save_allocations = QPushButton("ذخیره تخصیص‌های مالی")
         save_allocations.clicked.connect(self.save_allocations)
         allocation_layout.addWidget(save_allocations)
+        self.refresh()
+
+    def open_selected_activity_file(self):
+        row = self.cost_coverage_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "انتخاب فعالیت", "ابتدا یک فعالیت را از فهرست انتخاب کنید.")
+            return
+        item = self.cost_coverage_table.item(row, 0)
+        activity_id = item.data(Qt.UserRole + 1) if item is not None else None
+        if activity_id is None:
+            QMessageBox.warning(self, "فعالیت نامعتبر", "شناسه فعالیت در این ردیف پیدا نشد.")
+            return
+        dialog = ActivityWorkspaceDialog(activity_id, 1, self)
+        dialog.exec()
         self.refresh()
 
     def refresh(self):
@@ -3142,6 +3162,8 @@ class FinancePage(QWidget):
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if column == 0:
+                    item.setData(Qt.UserRole + 1, int(coverage_row["activity_id"]))
                 self.cost_coverage_table.setItem(row_index, column, item)
         self.cost_coverage_table.resizeColumnsToContents()
 
