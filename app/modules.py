@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -75,7 +76,8 @@ class RecordDialog(QDialog):
         initial = initial or {}
 
         layout = QVBoxLayout(self)
-        form = QFormLayout()
+        layout.setSpacing(12)
+        sections = {}
         for key, label, kind, options in fields:
             value = initial.get(key, options.get("default"))
             if kind == "text":
@@ -115,10 +117,20 @@ class RecordDialog(QDialog):
                 widget.setCurrentIndex(index if index >= 0 else 0)
             else:
                 raise ValueError(f"Unsupported field type: {kind}")
+            if options.get("hint"):
+                widget.setToolTip(options["hint"])
             self.inputs[key] = (widget, kind, options)
-            form.addRow(label, widget)
+            section = options.get("section", "اطلاعات")
+            if section not in sections:
+                group = QGroupBox(section)
+                group.setLayoutDirection(Qt.RightToLeft)
+                section_layout = QFormLayout(group)
+                section_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+                sections[section] = (group, section_layout)
+            sections[section][1].addRow(label, widget)
 
-        layout.addLayout(form)
+        for group, _section_layout in sections.values():
+            layout.addWidget(group)
         buttons = QDialogButtonBox(
             QDialogButtonBox.Save | QDialogButtonBox.Cancel
         )
@@ -305,15 +317,15 @@ class RecordPage(QWidget):
 
 
 ACTIVITY_FIELDS = [
-    ("position", "موقعیت", "text", {}),
-    ("zone", "جبهه کاری", "text", {}),
-    ("title", "شرح فعالیت", "text", {}),
-    ("quantity", "حجم کل", "number", {"minimum": 0, "decimals": 2}),
-    ("unit", "واحد", "text", {}),
-    ("start_date", "شروع", "date", {}),
-    ("finish_date", "پایان", "date", {}),
-    ("duration_days", "مدت (روز برنامه‌ای)", "integer", {"minimum": 0, "maximum": 36500}),
-    ("daily_target", "هدف تولید روزانه", "number", {"minimum": 0, "decimals": 2}),
+    ("position", "موقعیت", "text", {"section": "۱. مشخصات و محل اجرا"}),
+    ("zone", "جبهه کاری", "text", {"section": "۱. مشخصات و محل اجرا"}),
+    ("title", "شرح فعالیت", "text", {"section": "۱. مشخصات و محل اجرا"}),
+    ("quantity", "حجم کل", "number", {"minimum": 0, "decimals": 2, "section": "۲. مقادیر و واحد"}),
+    ("unit", "واحد", "text", {"section": "۲. مقادیر و واحد"}),
+    ("start_date", "شروع", "date", {"section": "۳. زمان‌بندی", "hint": "تاریخ شمسی؛ نمونه: 1405/07/17"}),
+    ("finish_date", "پایان", "date", {"section": "۳. زمان‌بندی", "hint": "تاریخ شمسی؛ نمونه: 1405/08/17"}),
+    ("duration_days", "مدت (روز برنامه‌ای)", "integer", {"minimum": 0, "maximum": 36500, "section": "۳. زمان‌بندی"}),
+    ("daily_target", "هدف تولید روزانه", "number", {"minimum": 0, "decimals": 2, "section": "۲. مقادیر و واحد"}),
 ]
 
 
