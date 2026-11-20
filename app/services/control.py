@@ -3,9 +3,15 @@ from __future__ import annotations
 import math
 import sqlite3
 from datetime import date, timedelta
-
-from app.services.work_calendar import day_index, finish_date, parse_date, project_holidays, shift_days
 from typing import Iterable
+
+from app.services.work_calendar import (
+    day_index,
+    finish_date,
+    parse_date,
+    project_holidays,
+    shift_days,
+)
 
 
 def planned_actual_totals(
