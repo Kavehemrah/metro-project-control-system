@@ -54,6 +54,33 @@ def test_critical_path_supports_finish_to_finish_relationship():
     assert by_id[2]["earliest_finish_day"] == 3
 
 
+def test_ss_zero_lag_allows_same_start_date():
+    result = analyze_critical_path(
+        [
+            {"id": 1, "duration_days": 3, "start_date": "2026-10-15"},
+            {"id": 2, "duration_days": 2, "start_date": "2026-10-15"},
+        ],
+        [{"activity_id": 2, "predecessor_activity_id": 1, "relation_type": "SS", "lag_days": 0}],
+        project_start="2026-10-15",
+    )
+    by_id = {item["id"]: item for item in result["activities"]}
+    assert by_id[2]["earliest_start"] == date(2026, 10, 15)
+
+
+def test_sf_zero_lag_requires_successor_finish_not_before_predecessor_start():
+    result = analyze_critical_path(
+        [
+            {"id": 1, "duration_days": 1, "start_date": "2026-10-15"},
+            {"id": 2, "duration_days": 2, "start_date": "2026-10-13"},
+        ],
+        [{"activity_id": 2, "predecessor_activity_id": 1, "relation_type": "SF", "lag_days": 0}],
+        project_start="2026-10-13",
+    )
+    by_id = {item["id"]: item for item in result["activities"]}
+    assert by_id[2]["earliest_start"] == date(2026, 10, 14)
+    assert by_id[2]["earliest_finish"] == date(2026, 10, 15)
+
+
 def test_critical_path_detects_cycles():
     result = analyze_critical_path(
         [{"id": 1, "duration_days": 1}, {"id": 2, "duration_days": 1}],
