@@ -16,6 +16,13 @@ def test_only_explicit_holidays_are_excluded_from_project_days():
     assert working_finish("2026-10-15", 3, holidays=("2026-10-16",)) == date(2026, 10, 18)
 
 
+def test_shift_from_holiday_milestone_and_inclusive_finish():
+    holidays = ("2026-10-16",)
+    assert shift_working_days("2026-10-16", 0, holidays=holidays) == date(2026, 10, 17)
+    assert shift_working_days("2026-10-16", 1, holidays=holidays) == date(2026, 10, 17)
+    assert working_finish("2026-10-16", 2, holidays=holidays) == date(2026, 10, 18)
+
+
 def test_project_calendar_validates_duration():
     with pytest.raises(ValueError):
         working_finish("2026-10-15", 0)
