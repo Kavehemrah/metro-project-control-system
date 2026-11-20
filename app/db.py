@@ -276,6 +276,52 @@ CREATE TABLE IF NOT EXISTS calendar_holiday (
     UNIQUE(project_id, holiday_date)
 );
 
+CREATE TABLE IF NOT EXISTS schedule_baseline (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    notes TEXT,
+    activity_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS schedule_baseline_activity (
+    id INTEGER PRIMARY KEY,
+    baseline_id INTEGER NOT NULL,
+    activity_id INTEGER NOT NULL,
+    row_no INTEGER,
+    position TEXT,
+    zone TEXT,
+    title TEXT,
+    quantity REAL DEFAULT 0,
+    unit TEXT,
+    start_date TEXT NOT NULL,
+    finish_date TEXT NOT NULL,
+    duration_days INTEGER NOT NULL,
+    FOREIGN KEY(baseline_id) REFERENCES schedule_baseline(id) ON DELETE CASCADE,
+    UNIQUE(baseline_id, activity_id)
+);
+
+CREATE TABLE IF NOT EXISTS schedule_baseline_dependency (
+    id INTEGER PRIMARY KEY,
+    baseline_id INTEGER NOT NULL,
+    activity_id INTEGER NOT NULL,
+    predecessor_activity_id INTEGER NOT NULL,
+    relation_type TEXT NOT NULL,
+    lag_days INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(baseline_id) REFERENCES schedule_baseline(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS schedule_baseline_holiday (
+    id INTEGER PRIMARY KEY,
+    baseline_id INTEGER NOT NULL,
+    holiday_date TEXT NOT NULL,
+    title TEXT NOT NULL,
+    FOREIGN KEY(baseline_id) REFERENCES schedule_baseline(id) ON DELETE CASCADE,
+    UNIQUE(baseline_id, holiday_date)
+);
+
 CREATE TABLE IF NOT EXISTS discrepancy (
     id INTEGER PRIMARY KEY,
     project_id INTEGER NOT NULL,
