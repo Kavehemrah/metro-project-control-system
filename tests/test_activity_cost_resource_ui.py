@@ -328,7 +328,7 @@ def test_activity_workspace_shows_dated_histories_in_separate_tabs(monkeypatch, 
     assert "هزینه واقعی ثبت‌شده: 700" in dialog.tab_specs["هزینه"]["summary"].text()
     assert dialog.tab_specs["درآمد"]["table"].item(0, 2).text() == "960"
     assert "درآمد تجمعی محاسبه‌شده: 960" in dialog.tab_specs["درآمد"]["summary"].text()
-    assert not dialog.tab_specs["درآمد"]["table"].isEnabled() is False
+    assert dialog.tab_specs["درآمد"]["table"].isEnabled()
     assert dialog.tab_specs["درآمد"]["table"].rowCount() == 1
 
     dialog.close()
@@ -388,7 +388,7 @@ def test_activity_row_click_opens_correct_workspace_and_shows_daily_finance_tota
     page = modules.ActivityPage("عملکرد روزانه", progress_only=True)
 
     assert page.table.item(0, 0).data(modules.Qt.UserRole) == activity_id
-    assert page.table.item(0, 15).text() == "2026/10/03"
+    assert page.table.item(0, 15).text() == "1405/07/11"
     assert page.table.item(0, 16).text() == "700"
     assert page.table.item(0, 17).text() == "960"
 
