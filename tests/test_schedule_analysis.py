@@ -23,9 +23,11 @@ def test_shift_from_holiday_milestone_and_inclusive_finish():
     assert working_finish("2026-10-16", 2, holidays=holidays) == date(2026, 10, 18)
 
 
-def test_project_calendar_validates_duration():
+def test_project_calendar_validates_duration_and_rejects_weekday_calendars():
     with pytest.raises(ValueError):
         working_finish("2026-10-15", 0)
+    with pytest.raises(ValueError):
+        shift_working_days("2026-10-15", 1, working_weekdays=())
 
 
 def test_critical_path_marks_zero_float_chain_and_parallel_float():
