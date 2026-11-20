@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 import sqlite3
 from datetime import date, timedelta
+
+from app.services.work_calendar import day_index, finish_date, project_holidays, shift_days
 from typing import Iterable
 
 
@@ -16,7 +18,16 @@ def planned_actual_totals(
     window; all manual actuals still contribute to cumulative progress.
     """
     planned = conn.execute(
-        "SELECT COALESCE(SUM(quantity), 0) FROM activity_daily_plan WHERE activity_id=?",
+        """
+        SELECT COALESCE(SUM(p.quantity), 0)
+        FROM activity_daily_plan p
+        JOIN activity a ON a.id=p.activity_id
+        WHERE p.activity_id=?
+          AND NOT EXISTS (
+              SELECT 1 FROM calendar_holiday h
+              WHERE h.project_id=a.project_id AND h.holiday_date=p.plan_date
+          )
+        """,
         (activity_id,),
     ).fetchone()[0]
 
@@ -32,9 +43,14 @@ def planned_actual_totals(
 
     plan_window = conn.execute(
         """
-        SELECT MIN(plan_date) AS first_date, MAX(plan_date) AS last_date
-        FROM activity_daily_plan
-        WHERE activity_id=?
+        SELECT MIN(p.plan_date) AS first_date, MAX(p.plan_date) AS last_date
+        FROM activity_daily_plan p
+        JOIN activity a ON a.id=p.activity_id
+        WHERE p.activity_id=?
+          AND NOT EXISTS (
+              SELECT 1 FROM calendar_holiday h
+              WHERE h.project_id=a.project_id AND h.holiday_date=p.plan_date
+          )
         """,
         (activity_id,),
     ).fetchone()
@@ -72,7 +88,7 @@ def planned_actual_totals(
 
 def activity_control(conn: sqlite3.Connection, activity_id: int) -> dict:
     row = conn.execute(
-        "SELECT quantity, remaining_qty, daily_target, start_date, finish_date FROM activity WHERE id=?",
+        "SELECT quantity, remaining_qty, daily_target, start_date, finish_date, project_id FROM activity WHERE id=?",
         (activity_id,),
     ).fetchone()
     if row is None:
@@ -101,6 +117,11 @@ def activity_control(conn: sqlite3.Connection, activity_id: int) -> dict:
 
 def update_activity_rollup(conn: sqlite3.Connection, activity_id: int) -> dict:
     control = activity_control(conn, activity_id)
+    activity = conn.execute(
+        "SELECT project_id FROM activity WHERE id=?", (activity_id,)
+    ).fetchone()
+    holidays = project_holidays(conn, activity["project_id"]) if activity else ()
+    excluded = {item.isoformat() for item in holidays}
     actual_days = conn.execute(
         """
         SELECT actual_date, quantity
@@ -112,23 +133,31 @@ def update_activity_rollup(conn: sqlite3.Connection, activity_id: int) -> dict:
     ).fetchall()
     forecast_date = None
     if actual_days:
-        try:
-            last_actual_date = date.fromisoformat(str(actual_days[-1]["actual_date"])[:10])
-        except ValueError:
-            last_actual_date = None
-        if last_actual_date is not None and control["remaining_qty"] <= 0:
+        last_actual_date = date.fromisoformat(str(actual_days[-1]["actual_date"])[:10])
+        if control["remaining_qty"] <= 0:
             forecast_date = last_actual_date
-        elif last_actual_date is not None and control["remaining_qty"] > 0:
-            # Average production over days with recorded work; this forecast
-            # uses calendar days because no working-day calendar is configured.
-            quantities = [float(row["quantity"] or 0) for row in actual_days]
-            actual_daily_rate = sum(quantities) / len(quantities)
-            if actual_daily_rate > 0:
-                forecast_date = forecast_finish(
-                    last_actual_date + timedelta(days=1),
-                    control["remaining_qty"],
-                    actual_daily_rate,
-                )
+        else:
+            valid_days = [
+                item for item in actual_days
+                if str(item["actual_date"])[:10] not in excluded
+            ]
+            if valid_days:
+                first = date.fromisoformat(str(valid_days[0]["actual_date"])[:10])
+                last = date.fromisoformat(str(valid_days[-1]["actual_date"])[:10])
+                scheduled_count = day_index(first, last, holidays) + 1
+                produced = sum(max(0.0, float(item["quantity"] or 0)) for item in valid_days)
+                rate = produced / scheduled_count if scheduled_count > 0 else 0.0
+                if rate <= 0:
+                    rate = max(0.0, float(conn.execute(
+                        "SELECT daily_target FROM activity WHERE id=?", (activity_id,)
+                    ).fetchone()[0] or 0))
+                if rate > 0:
+                    remaining_days = max(1, math.ceil(control["remaining_qty"] / rate))
+                    forecast_date = finish_date(
+                        shift_days(last_actual_date, 1, holidays),
+                        remaining_days,
+                        holidays,
+                    )
 
     conn.execute(
         """
