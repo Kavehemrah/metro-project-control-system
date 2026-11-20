@@ -77,3 +77,27 @@ def test_baseline_requires_a_nonempty_name(tmp_path):
     with pytest.raises(ValueError, match="name is required"):
         create_schedule_baseline(conn, 1, "  ")
     conn.close()
+
+
+
+def test_baseline_normalizes_jalali_activity_dates(tmp_path):
+    from app.services.dates import normalize_date
+
+    conn = connect(tmp_path / "jalali-baseline.db")
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Jalali baseline')")
+    conn.execute(
+        """
+        INSERT INTO activity(
+            project_id,row_no,title,quantity,unit,start_date,finish_date,
+            duration_days,source
+        ) VALUES(1,1,'Jalali activity',10,'m','1405/07/01','1405/07/03',3,'MANUAL')
+        """
+    )
+    baseline_id = create_schedule_baseline(conn, 1, "Jalali")
+    row = conn.execute(
+        "SELECT start_date,finish_date FROM schedule_baseline_activity WHERE baseline_id=?",
+        (baseline_id,),
+    ).fetchone()
+    assert row["start_date"] == normalize_date("1405/07/01")
+    assert row["finish_date"] == normalize_date("1405/07/03")
+    conn.close()
