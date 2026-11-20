@@ -760,11 +760,14 @@ class ActivityWorkspaceDialog(QDialog):
                     conn.close()
                 self.refresh()
             return
+        if selected["source"] not in ("MANUAL", "EXCEL"):
+            QMessageBox.information(self, "رکورد مرجع", "این نوع سابقه از این بخش قابل ویرایش نیست.")
+            return
         conn = connect()
         try:
             row = conn.execute(
-                f"SELECT * FROM {spec['table_name']} WHERE id=? AND activity_id=?",
-                (selected["id"], self.activity_id),
+                f"SELECT * FROM {spec['table_name']} WHERE id=? AND activity_id=? AND source=?",
+                (selected["id"], self.activity_id, selected["source"]),
             ).fetchone()
         finally:
             conn.close()
@@ -802,8 +805,8 @@ class ActivityWorkspaceDialog(QDialog):
                 conn.execute(
                     f"UPDATE {spec['table_name']} SET {date_key}=?,quantity=?"
                     + (",notes=?" if "notes" in values else "")
-                    + " WHERE id=? AND activity_id=? AND source='MANUAL'",
-                    (normalized_date, values["quantity"], *([values.get("notes", "")] if "notes" in values else []), existing["id"], self.activity_id),
+                    + " WHERE id=? AND activity_id=? AND source=?",
+                    (normalized_date, values["quantity"], *([values.get("notes", "")] if "notes" in values else []), existing["id"], self.activity_id, existing.get("source", "MANUAL")),
                 )
             if spec["table_name"] == "activity_daily_actual":
                 update_activity_rollup(conn, self.activity_id)
@@ -821,12 +824,15 @@ class ActivityWorkspaceDialog(QDialog):
         if not selected:
             return
         is_excel_period = selected["source"] == "EXCEL_PERIOD"
-        if selected["source"] != "MANUAL" and not is_excel_period:
+        if selected["source"] not in ("MANUAL", "EXCEL", "EXCEL_PERIOD"):
             QMessageBox.information(self, "رکورد مرجع", "این نوع سابقه از این بخش قابل حذف نیست.")
             return
         confirmation = (
-            "این عملکرد دوره‌ای واردشده از Excel حذف شود؟"
-            if is_excel_period else "رکورد انتخاب‌شده حذف شود؟"
+            "این عملکرد دوره‌ای واردشده از Excel از پایگاه داده حذف شود؟"
+            if is_excel_period else
+            "این عملکرد روزانه واردشده از Excel از پایگاه داده حذف شود؟"
+            if selected["source"] == "EXCEL" else
+            "رکورد انتخاب‌شده حذف شود؟"
         )
         if QMessageBox.question(self, "تأیید حذف", confirmation, QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
@@ -839,8 +845,8 @@ class ActivityWorkspaceDialog(QDialog):
                 )
             else:
                 conn.execute(
-                    f"DELETE FROM {spec['table_name']} WHERE id=? AND activity_id=? AND source='MANUAL'",
-                    (selected["id"], self.activity_id),
+                    f"DELETE FROM {spec['table_name']} WHERE id=? AND activity_id=? AND source=?",
+                    (selected["id"], self.activity_id, selected["source"]),
                 )
                 if spec["table_name"] == "activity_daily_actual":
                     update_activity_rollup(conn, self.activity_id)
