@@ -4,7 +4,7 @@ import math
 import sqlite3
 from datetime import date, timedelta
 
-from app.services.work_calendar import day_index, finish_date, project_holidays, shift_days
+from app.services.work_calendar import day_index, finish_date, parse_date, project_holidays, shift_days
 from typing import Iterable
 
 
@@ -133,17 +133,20 @@ def update_activity_rollup(conn: sqlite3.Connection, activity_id: int) -> dict:
     ).fetchall()
     forecast_date = None
     if actual_days:
-        last_actual_date = date.fromisoformat(str(actual_days[-1]["actual_date"])[:10])
-        if control["remaining_qty"] <= 0:
+        last_actual_date = parse_date(actual_days[-1]["actual_date"])
+        if last_actual_date is None:
+            actual_days = []
+        if actual_days and control["remaining_qty"] <= 0:
             forecast_date = last_actual_date
-        else:
+        elif actual_days:
             valid_days = [
                 item for item in actual_days
-                if str(item["actual_date"])[:10] not in excluded
+                if parse_date(item["actual_date"]) is not None
+                and parse_date(item["actual_date"]).isoformat() not in excluded
             ]
             if valid_days:
-                first = date.fromisoformat(str(valid_days[0]["actual_date"])[:10])
-                last = date.fromisoformat(str(valid_days[-1]["actual_date"])[:10])
+                first = parse_date(valid_days[0]["actual_date"])
+                last = parse_date(valid_days[-1]["actual_date"])
                 scheduled_count = day_index(first, last, holidays) + 1
                 produced = sum(max(0.0, float(item["quantity"] or 0)) for item in valid_days)
                 rate = produced / scheduled_count if scheduled_count > 0 else 0.0
