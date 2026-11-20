@@ -1,17 +1,17 @@
 """Schedule propagation, progress-linked finance estimates, and resource shortage checks.
 
-All schedule calculations use calendar days. Finance projections only allocate
-amounts explicitly linked to an activity; unallocated Excel totals are reported
-separately rather than assigned to activities by guesswork.
+Schedule dates use one project-day unit. Only dates explicitly registered in
+calendar_holiday are excluded from duration, lag, and productivity forecasts.
+Finance projections only allocate amounts explicitly linked to an activity.
 """
 from __future__ import annotations
 
 import math
 import sqlite3
 from collections import defaultdict, deque
-from datetime import date, timedelta
+from datetime import date
 
-from app.services.control import activity_control, forecast_finish
+from app.services.control import activity_control
 from app.services.dates import normalize_date
 from app.services.activity_costs import activity_cost_budgets
 from app.services.work_calendar import count_scheduled_days, day_index, finish_date, normalize_workday, project_holidays, shift_days
@@ -92,8 +92,8 @@ def calculate_schedule(
     """Calculate forecast dates and propagate predecessor delays.
 
     Supported relationships: finish_to_start (FS), start_to_start (SS),
-    finish_to_finish (FF), and start_to_finish (SF). lag_days is a calendar-day
-    offset from the predecessor date. A cycle is returned as a validation error;
+    finish_to_finish (FF), and start_to_finish (SF). lag_days is measured in
+    project days; explicitly registered holidays are skipped. A cycle is returned as a validation error;
     no partial schedule is persisted in that case.
     """
     as_of = as_of or date.today()
