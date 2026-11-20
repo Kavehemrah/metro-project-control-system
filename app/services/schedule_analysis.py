@@ -91,7 +91,8 @@ def analyze_critical_path(
         elif relation == "ff":
             offset = pred_duration + lag - succ_duration
         else:
-            offset = lag - succ_duration
+            # SF constrains successor finish (inclusive): start = finish - duration + 1.
+            offset = lag - succ_duration + 1
         edge = {"predecessor": predecessor, "successor": successor, "offset": offset}
         incoming[successor].append(edge)
         outgoing[predecessor].append(edge)
