@@ -430,8 +430,6 @@ class ActivityWorkspaceDialog(QDialog):
         layout.addLayout(actions)
         if entry_type == "REVENUE":
             add.hide()
-            edit.hide()
-            delete.hide()
         spec = {
             "table": table, "entry_type": entry_type, "summary": summary,
             "kind": "finance", "title": title,
@@ -559,6 +557,7 @@ class ActivityWorkspaceDialog(QDialog):
                                 "درآمد محاسبه‌شده از عملکرد دوره‌ای Excel",
                                 amount, "محاسباتی - دوره‌ای",
                                 f"مقدار دوره: {float(row['quantity'] or 0):,.2f} × نرخ واحد: {unit_rate:,.2f}",
+                                None, None, None,
                             ))
                         for row in daily_rows:
                             amount = max(0.0, float(row["quantity"] or 0)) * unit_rate
@@ -568,6 +567,7 @@ class ActivityWorkspaceDialog(QDialog):
                                 row["notes"] or "درآمد محاسبه‌شده از عملکرد روزانه",
                                 amount, "محاسباتی - روزانه",
                                 f"مقدار روز: {float(row['quantity'] or 0):,.2f} × نرخ واحد: {unit_rate:,.2f}",
+                                None, None, None,
                             ))
                         # Legacy manual revenue entries remain visible for audit, but are not
                         # mixed into the new calculated-revenue total.
@@ -577,6 +577,7 @@ class ActivityWorkspaceDialog(QDialog):
                                 float(row["amount"] or 0),
                                 "ثبت درآمد قبلی " + (row["source"] or ""),
                                 row["notes"] or "رکورد قدیمی؛ در محاسبه درآمد خودکار لحاظ نشده است",
+                                "actual_finance_entry", int(row["id"]), row["source"] or "",
                             ))
                         # Imported revenue rows are the allocation basis, not earned revenue.
                         for row in budget_rows:
@@ -585,13 +586,19 @@ class ActivityWorkspaceDialog(QDialog):
                                 float(row["amount"] or 0),
                                 "مبنای درآمد / تخصیص " + (row["source"] or ""),
                                 "مبلغ مبنا؛ درآمد تحقق‌یافته نیست",
+                                "revenue_entry", int(row["id"]), row["source"] or "",
                             ))
                         display_rows.sort(key=lambda row: (row[0], row[3]))
                         table = spec["table"]
                         table.setRowCount(len(display_rows))
                         for ri, values in enumerate(display_rows):
-                            for ci, value in enumerate(values):
-                                table.setItem(ri, ci, QTableWidgetItem(str(value)))
+                            for ci, value in enumerate(values[:5]):
+                                item = QTableWidgetItem(str(value))
+                                if ci == 0 and values[5]:
+                                    item.setData(Qt.UserRole, values[6])
+                                    item.setData(Qt.UserRole + 1, values[7])
+                                    item.setData(Qt.UserRole + 2, values[5])
+                                table.setItem(ri, ci, item)
                         spec["summary"].setText(
                             f"مبنای درآمد تخصیص‌یافته: {budget_total:,.0f} ریال  |  "
                             f"نرخ محاسباتی: {unit_rate:,.2f} ریال  |  "
