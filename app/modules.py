@@ -222,6 +222,8 @@ class RecordPage(QWidget):
                 text = formatter(value, record) if formatter else str(value if value is not None else "")
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if column_index == 0 and "id" in record.keys():
+                    item.setData(Qt.UserRole, int(record["id"]))
                 self.table.setItem(row_index, column_index, item)
         self.table.resizeColumnsToContents()
 
@@ -352,12 +354,6 @@ class ActivityWorkspaceDialog(QDialog):
         root.addWidget(self.tabs, 1)
         self.tab_specs = {}
         self._make_tab(
-            "برنامه اجرایی", "activity_daily_plan", "plan_date",
-            [("plan_date", "تاریخ برنامه", "date", {}),
-             ("quantity", "مقدار برنامه", "number", {"minimum": 0.01, "decimals": 2})],
-            ["تاریخ", "مقدار برنامه", "منبع"], "برنامه روزانه",
-        )
-        self._make_tab(
             "عملکرد روزانه", "activity_daily_actual", "actual_date",
             [("actual_date", "تاریخ عملکرد", "date", {}),
              ("quantity", "مقدار عملکرد", "number", {"minimum": 0.01, "decimals": 2}),
@@ -412,6 +408,11 @@ class ActivityWorkspaceDialog(QDialog):
         )
         self_finance_note.setWordWrap(True)
         self_finance_note.setStyleSheet(f"color:{MUTED};")
+        if entry_type == "REVENUE":
+            self_finance_note.setText(
+                "درآمد هر روز از مقدار عملکرد همان روز × نرخ واحد درآمد فعالیت محاسبه می‌شود. "
+                "مبلغ درآمد دستی ثبت نمی‌شود و ردیف‌های مرجع Excel فقط‌خواندنی‌اند."
+            )
         layout.addWidget(self_finance_note)
         summary = QLabel()
         summary.setStyleSheet(f"color:{BLUE};font-weight:600;")
@@ -427,6 +428,10 @@ class ActivityWorkspaceDialog(QDialog):
             actions.addWidget(button)
         actions.addStretch()
         layout.addLayout(actions)
+        if entry_type == "REVENUE":
+            add.hide()
+            edit.hide()
+            delete.hide()
         spec = {
             "table": table, "entry_type": entry_type, "summary": summary,
             "kind": "finance", "title": title,
@@ -484,7 +489,92 @@ class ActivityWorkspaceDialog(QDialog):
                     table.resizeColumnsToContents()
                 else:
                     entry_type = spec["entry_type"]
-                    budget_table = "cost_entry" if entry_type == "COST" else "revenue_entry"
+                    if entry_type == "REVENUE":
+                        budget_row = conn.execute(
+                            """
+                            SELECT COALESCE(SUM(amount),0) AS amount
+                            FROM revenue_entry
+                            WHERE project_id=? AND activity_id=?
+                              AND source IN ('EXCEL_ACTIVITY','MANUAL')
+                            """,
+                            (self.project_id, self.activity_id),
+                        ).fetchone()
+                        total_qty = max(0.0, float(a["quantity"] or 0))
+                        unit_rate = float(budget_row["amount"] or 0) / total_qty if total_qty > 0 else 0.0
+                        daily_rows = conn.execute(
+                            """
+                            SELECT id,actual_date AS record_date,quantity,source,notes
+                            FROM activity_daily_actual
+                            WHERE activity_id=?
+                            ORDER BY actual_date,id
+                            """,
+                            (self.activity_id,),
+                        ).fetchall()
+                        calculated_total = 0.0
+                        table = spec["table"]
+                        table.setRowCount(len(daily_rows))
+                        for ri, row in enumerate(daily_rows):
+                            amount = max(0.0, float(row["quantity"] or 0)) * unit_rate
+                            calculated_total += amount
+                            values = [
+                                format_date(row["record_date"]),
+                                row["notes"] or "درآمد محاسبه‌شده از عملکرد روزانه",
+                                f"{amount:,.0f}",
+                                "محاسباتی",
+                                f"مقدار: {float(row['quantity'] or 0):,.2f} × نرخ واحد: {unit_rate:,.2f}",
+                            ]
+                            for ci, value in enumerate(values):
+                                table.setItem(ri, ci, QTableWidgetItem(str(value)))
+                        spec["summary"].setText(
+                            f"نرخ واحد محاسباتی: {unit_rate:,.2f} ریال  |  "
+                            f"درآمد تجمعی محاسبه‌شده: {calculated_total:,.0f} ریال"
+                        )
+                        table.resizeColumnsToContents()
+                        continue
+
+                    if entry_type == "COST":
+                        budget_row = conn.execute(
+                            """
+                            SELECT COALESCE(SUM(amount),0) AS amount
+                            FROM cost_entry WHERE project_id=? AND activity_id=?
+                              AND source IN ('EXCEL','MANUAL')
+                            """,
+                            (self.project_id, self.activity_id),
+                        ).fetchone()
+                        actual_rows = conn.execute(
+                            """
+                            SELECT id,entry_date AS record_date,category,amount,source,notes
+                            FROM actual_finance_entry
+                            WHERE project_id=? AND activity_id=? AND entry_type='COST'
+                            ORDER BY entry_date,id
+                            """,
+                            (self.project_id, self.activity_id),
+                        ).fetchall()
+                        actual_total = sum(float(row["amount"] or 0) for row in actual_rows)
+                        spec["summary"].setText(
+                            f"بودجه/مبلغ مبنای تخصیص‌یافته: {float(budget_row['amount'] or 0):,.0f} ریال  |  "
+                            f"هزینه واقعی ثبت‌شده: {actual_total:,.0f} ریال"
+                        )
+                        table = spec["table"]
+                        table.setRowCount(len(actual_rows))
+                        for ri, row in enumerate(actual_rows):
+                            values = [
+                                format_date(row["record_date"]), row["category"] or "",
+                                f"{float(row['amount'] or 0):,.0f}",
+                                "واقعی " + (row["source"] or ""),
+                                row["notes"] or "",
+                            ]
+                            for ci, value in enumerate(values):
+                                item = QTableWidgetItem(str(value))
+                                if ci == 0:
+                                    item.setData(Qt.UserRole, int(row["id"]))
+                                    item.setData(Qt.UserRole + 1, row["source"] or "")
+                                    item.setData(Qt.UserRole + 2, "actual_finance_entry")
+                                table.setItem(ri, ci, item)
+                        table.resizeColumnsToContents()
+                        continue
+
+                    budget_table = "revenue_entry"
                     budget_rows = conn.execute(
                         f"SELECT id,period AS record_date,category,amount,source,'' AS notes "
                         f"FROM {budget_table} WHERE project_id=? AND activity_id=?",
@@ -702,6 +792,11 @@ class ActivityWorkspaceDialog(QDialog):
         self.refresh()
 
     def _add_finance(self, spec):
+        if spec["entry_type"] == "REVENUE":
+            return
+        if spec["entry_type"] == "COST":
+            self._finance_dialog(spec)
+            return
         choice = QMessageBox.question(
             self, f"افزودن {spec['title']}",
             "برای افزودن «بودجه/مبلغ مبنا» پاسخ بله و برای افزودن «ثبت واقعی تاریخ‌دار» پاسخ خیر را انتخاب کنید.",
@@ -711,8 +806,7 @@ class ActivityWorkspaceDialog(QDialog):
         if choice == QMessageBox.Cancel:
             return
         if choice == QMessageBox.Yes:
-            table_name = "cost_entry" if spec["entry_type"] == "COST" else "revenue_entry"
-            self._finance_dialog(spec, {"_table": table_name})
+            self._finance_dialog(spec, {"_table": "cost_entry"})
         else:
             self._finance_dialog(spec)
 
@@ -785,6 +879,9 @@ class ActivityPage(RecordPage):
             ("progress", "پیشرفت", lambda v, _r: f"{(v or 0) * 100:.1f}%"),
             ("forecast_finish", "پایان پیش‌بینی", None),
             ("delay_days", "تأخیر", lambda v, _r: f"{v or 0} روز"),
+            ("latest_actual_date", "آخرین تاریخ عملکرد", None),
+            ("actual_cost_total", "هزینه واقعی تجمعی", lambda v, _r: f"{v or 0:,.0f}"),
+            ("calculated_revenue_total", "درآمد محاسباتی تجمعی", lambda v, _r: f"{v or 0:,.0f}"),
         ]
         super().__init__(
             title,
@@ -812,10 +909,9 @@ class ActivityPage(RecordPage):
         self.baseline_compare_button = QPushButton("مقایسه با خط مبنا")
         self.baseline_compare_button.clicked.connect(self.show_baseline_comparison)
         self.layout().itemAt(2).layout().addWidget(self.baseline_compare_button)
-        if not progress_only:
-            self.daily_plan_button = QPushButton("مدیریت برنامه روزانه")
-            self.daily_plan_button.clicked.connect(self.manage_daily_plan)
-            self.layout().itemAt(2).layout().addWidget(self.daily_plan_button)
+        self.daily_plan_button = QPushButton("مدیریت برنامه روزانه")
+        self.daily_plan_button.clicked.connect(self.manage_daily_plan)
+        self.layout().itemAt(2).layout().addWidget(self.daily_plan_button)
         if progress_only:
             self.add_button.hide()
             self.edit_button.hide()
@@ -887,7 +983,7 @@ class ActivityPage(RecordPage):
         self.open_workspace_button.clicked.connect(self.open_workspace)
         self.layout().itemAt(2).layout().addWidget(self.open_workspace_button)
         self.table.cellDoubleClicked.disconnect()
-        self.table.cellDoubleClicked.connect(self._open_workspace_from_row)
+        self.table.cellClicked.connect(self._open_workspace_from_row)
         self._updating_filter_choices = False
         self.refresh()
 
@@ -901,14 +997,19 @@ class ActivityPage(RecordPage):
         return next((record for record in self.records if int(record["id"]) == int(activity_id)), None) if activity_id is not None else None
 
     def _open_workspace_from_row(self, row, _column):
-        self.table.selectRow(row)
-        self.open_workspace()
-
-    def open_workspace(self):
-        activity = self._selected_record()
-        if activity is None:
+        if row < 0 or row >= len(self.records):
             return
-        dialog = ActivityWorkspaceDialog(activity["id"], self.project_id, self)
+        self.table.selectRow(row)
+        activity = self.records[row]
+        self.open_workspace(activity_id=activity["id"])
+
+    def open_workspace(self, activity_id=None):
+        if activity_id is None:
+            activity = self._selected_record()
+            if activity is None:
+                return
+            activity_id = activity["id"]
+        dialog = ActivityWorkspaceDialog(activity_id, self.project_id, self)
         dialog.exec()
         self.refresh(recalculate_schedule=False)
 
@@ -1573,6 +1674,32 @@ class ActivityPage(RecordPage):
             self.table.setRowCount(len(self.records))
             for row_index, record in enumerate(self.records):
                 control = activity_control(conn, record["id"])
+                latest_actual = conn.execute(
+                    "SELECT MAX(actual_date) FROM activity_daily_actual WHERE activity_id=?",
+                    (record["id"],),
+                ).fetchone()[0]
+                actual_cost_total = conn.execute(
+                    """
+                    SELECT COALESCE(SUM(amount),0) FROM actual_finance_entry
+                    WHERE project_id=? AND activity_id=? AND entry_type='COST'
+                    """,
+                    (self.project_id, record["id"]),
+                ).fetchone()[0]
+                revenue_budget = conn.execute(
+                    """
+                    SELECT COALESCE(SUM(amount),0) FROM revenue_entry
+                    WHERE project_id=? AND activity_id=?
+                      AND source IN ('EXCEL_ACTIVITY','MANUAL')
+                    """,
+                    (self.project_id, record["id"]),
+                ).fetchone()[0]
+                daily_actual_total = conn.execute(
+                    "SELECT COALESCE(SUM(quantity),0) FROM activity_daily_actual WHERE activity_id=?",
+                    (record["id"],),
+                ).fetchone()[0]
+                activity_quantity = max(0.0, float(record["quantity"] or 0))
+                unit_rate = float(revenue_budget or 0) / activity_quantity if activity_quantity else 0.0
+                calculated_revenue_total = float(daily_actual_total or 0) * unit_rate
                 display_values = [
                     record["row_no"],
                     record["position"],
@@ -1589,6 +1716,9 @@ class ActivityPage(RecordPage):
                     f"{control['physical_progress_pct']:.1f}%",
                     format_date(record["forecast_finish"]),
                     f"{record['delay_days'] or 0} روز",
+                    format_date(latest_actual),
+                    f"{float(actual_cost_total or 0):,.0f}",
+                    f"{calculated_revenue_total:,.0f}",
                 ]
                 for column_index, value in enumerate(display_values):
                     item = QTableWidgetItem(str(value if value is not None else ""))
