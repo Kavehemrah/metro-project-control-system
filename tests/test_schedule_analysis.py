@@ -9,17 +9,16 @@ from app.services.schedule_analysis import (
 )
 
 
-def test_working_calendar_skips_holiday_and_friday():
-    # 2026-10-15 is Thursday; Saturday 17th is a holiday.
-    assert shift_working_days("2026-10-15", 1, holidays=("2026-10-17",)) == date(2026, 10, 18)
-    assert working_finish("2026-10-15", 3, holidays=("2026-10-17",)) == date(2026, 10, 19)
+def test_only_explicit_holidays_are_excluded_from_project_days():
+    # Friday is an ordinary scheduled day unless explicitly registered.
+    assert shift_working_days("2026-10-15", 1) == date(2026, 10, 16)
+    assert shift_working_days("2026-10-15", 1, holidays=("2026-10-16",)) == date(2026, 10, 17)
+    assert working_finish("2026-10-15", 3, holidays=("2026-10-16",)) == date(2026, 10, 18)
 
 
-def test_working_calendar_validates_duration_and_weekdays():
+def test_project_calendar_validates_duration():
     with pytest.raises(ValueError):
         working_finish("2026-10-15", 0)
-    with pytest.raises(ValueError):
-        shift_working_days("2026-10-15", 1, working_weekdays=())
 
 
 def test_critical_path_marks_zero_float_chain_and_parallel_float():
@@ -37,12 +36,12 @@ def test_critical_path_marks_zero_float_chain_and_parallel_float():
     result = analyze_critical_path(activities, dependencies, project_start="2026-10-15")
     by_id = {item["id"]: item for item in result["activities"]}
     assert result["cycle"] == []
-    assert result["project_duration_workdays"] == 6
+    assert result["project_duration_days"] == 6
     assert result["critical_activity_ids"] == [1, 2, 3]
-    assert by_id[1]["total_float_workdays"] == 0
-    assert by_id[4]["total_float_workdays"] == 4
+    assert by_id[1]["total_float_days"] == 0
+    assert by_id[4]["total_float_days"] == 4
     assert by_id[1]["earliest_start"] == date(2026, 10, 15)
-    assert by_id[1]["earliest_finish"] == date(2026, 10, 17)
+    assert by_id[1]["earliest_finish"] == date(2026, 10, 16)
 
 
 def test_critical_path_supports_finish_to_finish_relationship():
@@ -51,8 +50,8 @@ def test_critical_path_supports_finish_to_finish_relationship():
         [{"activity_id": 2, "predecessor_activity_id": 1, "relation_type": "FF"}],
     )
     by_id = {item["id"]: item for item in result["activities"]}
-    assert by_id[2]["earliest_start_workday"] == 2
-    assert by_id[2]["earliest_finish_workday"] == 3
+    assert by_id[2]["earliest_start_day"] == 2
+    assert by_id[2]["earliest_finish_day"] == 3
 
 
 def test_critical_path_detects_cycles():
@@ -64,7 +63,8 @@ def test_critical_path_detects_cycles():
         ],
     )
     assert set(result["cycle"]) == {1, 2}
-    assert result["project_duration_workdays"] is None
+    assert result["project_duration_days"] is None
+
 
 def test_critical_path_respects_later_baseline_start_dates():
     result = analyze_critical_path(
@@ -74,27 +74,41 @@ def test_critical_path_respects_later_baseline_start_dates():
         ]
     )
     by_id = {item["id"]: item for item in result["activities"]}
-    assert by_id[2]["earliest_start_workday"] == 4
+    assert by_id[2]["earliest_start_day"] == 5
     assert by_id[2]["earliest_start"] == date(2026, 10, 20)
-    assert result["project_duration_workdays"] == 5
+    assert result["project_duration_days"] == 6
 
 
-def test_critical_path_skips_registered_holidays():
+def test_critical_path_skips_only_registered_holidays():
     result = analyze_critical_path(
         [{"id": 1, "title": "Pour", "duration_days": 3, "start_date": "2026-10-15"}],
-        holidays=("2026-10-17",),
+        holidays=("2026-10-16",),
     )
     activity = result["activities"][0]
     assert activity["earliest_start"] == date(2026, 10, 15)
-    assert activity["earliest_finish"] == date(2026, 10, 19)
-    assert result["project_duration_workdays"] == 3
+    assert activity["earliest_finish"] == date(2026, 10, 18)
+    assert result["project_duration_days"] == 3
 
 
-def test_critical_path_holiday_can_extend_activity_start_and_finish():
+def test_activity_start_on_registered_holiday_moves_to_next_project_day():
     result = analyze_critical_path(
-        [{"id": 1, "title": "Work", "duration_days": 2, "start_date": "2026-10-17"}],
-        holidays=("2026-10-17",),
+        [{"id": 1, "title": "Work", "duration_days": 2, "start_date": "2026-10-16"}],
+        holidays=("2026-10-16",),
     )
     activity = result["activities"][0]
-    assert activity["earliest_start"] == date(2026, 10, 18)
-    assert activity["earliest_finish"] == date(2026, 10, 19)
+    assert activity["earliest_start"] == date(2026, 10, 17)
+    assert activity["earliest_finish"] == date(2026, 10, 18)
+
+
+def test_fs_zero_lag_starts_on_next_non_holiday_day():
+    result = analyze_critical_path(
+        [
+            {"id": 1, "duration_days": 1, "start_date": "2026-10-15"},
+            {"id": 2, "duration_days": 2, "start_date": "2026-10-16"},
+        ],
+        [{"activity_id": 2, "predecessor_activity_id": 1, "relation_type": "FS", "lag_days": 0}],
+        holidays=("2026-10-16",),
+    )
+    by_id = {item["id"]: item for item in result["activities"]}
+    assert by_id[2]["earliest_start"] == date(2026, 10, 17)
+    assert by_id[2]["earliest_finish"] == date(2026, 10, 18)
