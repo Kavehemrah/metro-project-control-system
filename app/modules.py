@@ -1442,8 +1442,10 @@ class ActivityPage(RecordPage):
                 )
                 return
             try:
+                digit_map = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+                normalized_quantity = raw_qty.translate(digit_map).replace(",", "").replace("٬", "")
                 actual_date = normalize_date(raw_date)
-                quantity = float(raw_qty.replace(",", ""))
+                quantity = float(normalized_quantity)
             except (ValueError, TypeError):
                 QMessageBox.warning(
                     self, "مقدار نامعتبر",
