@@ -513,7 +513,9 @@ class ActivityWorkspaceDialog(QDialog):
                         budget_rows = conn.execute(
                             """
                             SELECT id,period AS record_date,category,amount,source,'' AS notes
-                            FROM revenue_entry WHERE project_id=? AND activity_id=?
+                            FROM revenue_entry
+                            WHERE project_id=? AND activity_id=?
+                              AND source IN ('EXCEL_ACTIVITY','MANUAL')
                             ORDER BY period,id
                             """,
                             (self.project_id, self.activity_id),
