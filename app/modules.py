@@ -307,7 +307,7 @@ ACTIVITY_FIELDS = [
     ("unit", "واحد", "text", {}),
     ("start_date", "شروع", "date", {}),
     ("finish_date", "پایان", "date", {}),
-    ("duration_days", "مدت (روز)", "integer", {"minimum": 0, "maximum": 36500}),
+    ("duration_days", "مدت (روز برنامه‌ای)", "integer", {"minimum": 0, "maximum": 36500}),
     ("daily_target", "هدف تولید روزانه", "number", {"minimum": 0, "decimals": 2}),
 ]
 
@@ -930,7 +930,7 @@ class ActivityPage(RecordPage):
         lag.setValue(0)
         form.addRow("فعالیت پیش‌نیاز", predecessor)
         form.addRow("نوع رابطه", relation)
-        form.addRow("وقفه تقویمی (روز)", lag)
+        form.addRow("وقفه (روز برنامه‌ای)", lag)
         root.addLayout(form)
 
         dependency_table = QTableWidget()
