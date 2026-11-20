@@ -956,7 +956,6 @@ class ActivityPage(RecordPage):
             self._updating_filter_choices = False
 
     def _dialog(self, title, initial=None):
-        dialog = super()._dialog if False else None
         form = RecordDialog(title, self.fields, initial, self)
         conn = connect()
         try:
