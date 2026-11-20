@@ -538,6 +538,15 @@ class ActivityWorkspaceDialog(QDialog):
                             """,
                             (self.activity_id,),
                         ).fetchall()
+                        legacy_revenue_rows = conn.execute(
+                            """
+                            SELECT id,entry_date AS record_date,category,amount,source,notes
+                            FROM actual_finance_entry
+                            WHERE project_id=? AND activity_id=? AND entry_type='REVENUE'
+                            ORDER BY entry_date,id
+                            """,
+                            (self.project_id, self.activity_id),
+                        ).fetchall()
                         display_rows = []
                         calculated_total = 0.0
                         for row in period_rows:
@@ -557,6 +566,15 @@ class ActivityWorkspaceDialog(QDialog):
                                 row["notes"] or "درآمد محاسبه‌شده از عملکرد روزانه",
                                 amount, "محاسباتی - روزانه",
                                 f"مقدار روز: {float(row['quantity'] or 0):,.2f} × نرخ واحد: {unit_rate:,.2f}",
+                            ))
+                        # Legacy manual revenue entries remain visible for audit, but are not
+                        # mixed into the new calculated-revenue total.
+                        for row in legacy_revenue_rows:
+                            display_rows.append((
+                                format_date(row["record_date"]), row["category"] or "",
+                                float(row["amount"] or 0),
+                                "ثبت درآمد قبلی " + (row["source"] or ""),
+                                row["notes"] or "رکورد قدیمی؛ در محاسبه درآمد خودکار لحاظ نشده است",
                             ))
                         # Imported revenue rows are the allocation basis, not earned revenue.
                         for row in budget_rows:
