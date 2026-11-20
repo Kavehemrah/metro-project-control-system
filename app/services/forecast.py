@@ -52,34 +52,40 @@ def _observed_finish(conn, row, remaining: float, as_of: date, holidays=()) -> d
         """,
         (row["id"], as_of.isoformat()),
     ).fetchall()
+    if not days:
+        return None
+    last_actual_day = _as_date(days[-1]["actual_date"])
+    if last_actual_day is None:
+        return None
+    if remaining <= 0:
+        return last_actual_day
+
     excluded = {item.isoformat() for item in holidays}
     valid = [
         item for item in days
         if _as_date(item["actual_date"]) is not None
         and _as_date(item["actual_date"]).isoformat() not in excluded
     ]
-    if not valid:
-        return None
-    first_day = _as_date(valid[0]["actual_date"])
-    last_day = _as_date(valid[-1]["actual_date"])
-    if remaining <= 0:
-        return last_day
-    scheduled_days = day_index(first_day, last_day, holidays) + 1
-    if scheduled_days <= 0:
-        return None
-    daily_totals = {}
-    for item in valid:
-        actual_day = _as_date(item["actual_date"])
-        daily_totals[actual_day] = daily_totals.get(actual_day, 0.0) + max(
-            0.0, float(item["quantity"] or 0)
-        )
-    rate = sum(daily_totals.values()) / scheduled_days
+    if valid:
+        first_day = _as_date(valid[0]["actual_date"])
+        last_worked_day = _as_date(valid[-1]["actual_date"])
+        scheduled_days = day_index(first_day, last_worked_day, holidays) + 1
+        daily_totals = {}
+        for item in valid:
+            actual_day = _as_date(item["actual_date"])
+            daily_totals[actual_day] = daily_totals.get(actual_day, 0.0) + max(
+                0.0, float(item["quantity"] or 0)
+            )
+        rate = sum(daily_totals.values()) / scheduled_days if scheduled_days > 0 else 0.0
+    else:
+        rate = 0.0
+
     if rate <= 0:
         rate = max(0.0, float(row["daily_target"] or 0))
     if rate <= 0:
         return None
     remaining_days = max(1, math.ceil(remaining / rate))
-    next_workday = shift_days(last_day, 1, holidays)
+    next_workday = shift_days(last_actual_day, 1, holidays)
     return finish_date(next_workday, remaining_days, holidays)
 
 
