@@ -228,3 +228,30 @@ def test_dashboard_shows_reconciliation_detail_and_prioritizes_high_discrepancie
 
     page.close()
     assert app is not None
+
+
+
+def test_activity_record_dialog_groups_fields_into_clear_sections():
+    app = QApplication.instance() or QApplication([])
+    dialog = modules.RecordDialog(
+        "افزودن فعالیت",
+        modules.ACTIVITY_FIELDS,
+    )
+
+    from PySide6.QtWidgets import QGroupBox, QLineEdit
+
+    sections = [group.title() for group in dialog.findChildren(QGroupBox)]
+    assert sections == [
+        "۱. مشخصات و محل اجرا",
+        "۲. مقادیر و واحد",
+        "۳. زمان‌بندی",
+    ]
+    assert set(dialog.inputs) == {
+        "position", "zone", "title", "quantity", "unit",
+        "start_date", "finish_date", "duration_days", "daily_target",
+    }
+    assert isinstance(dialog.inputs["start_date"][0], QLineEdit)
+    assert "1405/07/17" in dialog.inputs["start_date"][0].toolTip()
+
+    dialog.close()
+    assert app is not None
