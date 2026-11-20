@@ -14,6 +14,7 @@ from datetime import date, timedelta
 from app.services.control import activity_control, forecast_finish
 from app.services.dates import normalize_date
 from app.services.activity_costs import activity_cost_budgets
+from app.services.work_calendar import day_index, finish_date, normalize_workday, project_holidays, shift_days
 
 
 def _as_date(value) -> date | None:
@@ -41,28 +42,45 @@ def _activity_duration(row) -> int:
     return max(1, math.ceil(quantity / target)) if target else 1
 
 
-def _observed_finish(conn, row, remaining: float, as_of: date) -> date | None:
+def _observed_finish(conn, row, remaining: float, as_of: date, holidays=()) -> date | None:
+    """Forecast completion from production per scheduled day, including zero days."""
     days = conn.execute(
         """
         SELECT actual_date, quantity FROM activity_daily_actual
-        WHERE activity_id=? AND source='MANUAL'
+        WHERE activity_id=? AND source='MANUAL' AND actual_date<=?
         ORDER BY actual_date, id
         """,
-        (row["id"],),
+        (row["id"], as_of.isoformat()),
     ).fetchall()
-    if not days:
+    excluded = {item.isoformat() for item in holidays}
+    valid = [
+        item for item in days
+        if _as_date(item["actual_date"]) is not None
+        and _as_date(item["actual_date"]).isoformat() not in excluded
+    ]
+    if not valid:
         return None
-    last_day = _as_date(days[-1]["actual_date"])
-    if last_day is None:
-        return None
+    first_day = _as_date(valid[0]["actual_date"])
+    last_day = _as_date(valid[-1]["actual_date"])
     if remaining <= 0:
         return last_day
-    quantities = [max(0.0, float(item["quantity"] or 0)) for item in days]
-    positive = [quantity for quantity in quantities if quantity > 0]
-    rate = sum(positive) / len(positive) if positive else 0.0
+    scheduled_days = day_index(first_day, last_day, holidays) + 1
+    if scheduled_days <= 0:
+        return None
+    daily_totals = {}
+    for item in valid:
+        actual_day = _as_date(item["actual_date"])
+        daily_totals[actual_day] = daily_totals.get(actual_day, 0.0) + max(
+            0.0, float(item["quantity"] or 0)
+        )
+    rate = sum(daily_totals.values()) / scheduled_days
     if rate <= 0:
         rate = max(0.0, float(row["daily_target"] or 0))
-    return forecast_finish(last_day + timedelta(days=1), remaining, rate) if rate > 0 else None
+    if rate <= 0:
+        return None
+    remaining_days = max(1, math.ceil(remaining / rate))
+    next_workday = shift_days(last_day, 1, holidays)
+    return finish_date(next_workday, remaining_days, holidays)
 
 
 def calculate_schedule(
@@ -79,6 +97,7 @@ def calculate_schedule(
     no partial schedule is persisted in that case.
     """
     as_of = as_of or date.today()
+    holidays = project_holidays(conn, project_id)
     rows = conn.execute(
         """
         SELECT id, row_no, title, start_date, finish_date, forecast_finish,
@@ -147,13 +166,15 @@ def calculate_schedule(
         duration = _activity_duration(row)
         control = activity_control(conn, activity_id)
         remaining = control["remaining_qty"]
-        observed_finish = _observed_finish(conn, row, remaining, as_of)
+        observed_finish = _observed_finish(conn, row, remaining, as_of, holidays)
+        baseline_start = normalize_workday(baseline_start, holidays) if baseline_start else None
+        baseline_finish = normalize_workday(baseline_finish, holidays, -1) if baseline_finish else None
         initial_finish = observed_finish or baseline_finish
         if initial_finish is None and baseline_start is not None:
-            initial_finish = baseline_start + timedelta(days=duration - 1)
+            initial_finish = finish_date(baseline_start, duration, holidays)
         initial_start = baseline_start
         if initial_start is None and initial_finish is not None:
-            initial_start = initial_finish - timedelta(days=duration - 1)
+            initial_start = shift_days(initial_finish, -(duration - 1), holidays)
 
         required_start = initial_start
         required_finish = initial_finish
@@ -168,15 +189,15 @@ def calculate_schedule(
             pred_finish = predecessor["forecast_finish"]
             candidate_start = None
             if relation in ("finish_to_start", "fs") and pred_finish:
-                candidate_start = pred_finish + timedelta(days=lag)
+                candidate_start = shift_days(pred_finish, lag + 1, holidays)
             elif relation in ("start_to_start", "ss") and pred_start:
-                candidate_start = pred_start + timedelta(days=lag)
+                candidate_start = shift_days(pred_start, lag, holidays)
             elif relation in ("finish_to_finish", "ff") and pred_finish:
-                candidate_finish = pred_finish + timedelta(days=lag)
-                candidate_start = candidate_finish - timedelta(days=duration - 1)
+                candidate_finish = shift_days(pred_finish, lag, holidays)
+                candidate_start = shift_days(candidate_finish, -(duration - 1), holidays)
             elif relation in ("start_to_finish", "sf") and pred_start:
-                candidate_finish = pred_start + timedelta(days=lag)
-                candidate_start = candidate_finish - timedelta(days=duration - 1)
+                candidate_finish = shift_days(pred_start, lag, holidays)
+                candidate_start = shift_days(candidate_finish, -(duration - 1), holidays)
             if candidate_start is not None and (required_start is None or candidate_start > required_start):
                 required_start = candidate_start
 
@@ -185,17 +206,17 @@ def calculate_schedule(
         if initial_start and required_start and required_start > initial_start:
             shift = required_start - initial_start
             required_finish = max(
-                required_finish or (required_start + timedelta(days=duration - 1)),
-                required_start + timedelta(days=duration - 1),
+                required_finish or finish_date(required_start, duration, holidays),
+                finish_date(required_start, duration, holidays),
             )
         elif required_start and required_finish is None:
-            required_finish = required_start + timedelta(days=duration - 1)
+            required_finish = finish_date(required_start, duration, holidays)
         if required_finish and required_start and required_finish < required_start:
-            required_finish = required_start + timedelta(days=duration - 1)
+            required_finish = finish_date(required_start, duration, holidays)
 
         baseline_finish_for_delay = baseline_finish
         delay_days = (
-            max(0, (required_finish - baseline_finish_for_delay).days)
+            max(0, day_index(baseline_finish_for_delay, required_finish, holidays))
             if required_finish and baseline_finish_for_delay
             else max(0, int(row["delay_days"] or 0))
         )
