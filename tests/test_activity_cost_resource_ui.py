@@ -377,6 +377,14 @@ def test_activity_row_click_opens_correct_workspace_and_shows_daily_finance_tota
     )
     conn.execute(
         """
+        INSERT INTO activity_period(
+            activity_id,period,planned_qty,actual_qty,cumulative_qty,remaining_qty,achievement_pct,source
+        ) VALUES(?,'مهر 1405',10,12,12,88,120,'EXCEL')
+        """,
+        (activity_id,),
+    )
+    conn.execute(
+        """
         INSERT INTO revenue_entry(project_id,activity_id,period,category,amount,source)
         VALUES(1,?,'کل پروژه','درآمد فعالیت',12000,'EXCEL_ACTIVITY')
         """,
@@ -410,7 +418,7 @@ def test_activity_row_click_opens_correct_workspace_and_shows_daily_finance_tota
     assert page.table.item(0, 0).data(modules.Qt.UserRole) == activity_id
     assert page.table.item(0, 15).text() == "1405/07/11"
     assert page.table.item(0, 16).text() == "700"
-    assert page.table.item(0, 17).text() == "960"
+    assert page.table.item(0, 17).text() == "2,400"
 
     page.table.cellClicked.emit(0, 0)
     assert opened == {"activity_id": activity_id, "project_id": 1}
