@@ -101,7 +101,7 @@ def calculate_schedule(
     rows = conn.execute(
         """
         SELECT id, row_no, title, start_date, finish_date, forecast_finish,
-               duration_days, daily_target, quantity, remaining_qty, delay_days
+               duration_days, daily_target, quantity, remaining_qty, baseline_actual_qty, delay_days
         FROM activity WHERE project_id=? ORDER BY row_no, id
         """,
         (project_id,),
@@ -164,8 +164,19 @@ def calculate_schedule(
         baseline_start = _as_date(row["start_date"])
         baseline_finish = _as_date(row["finish_date"])
         duration = _activity_duration(row, holidays)
-        control = activity_control(conn, activity_id)
-        remaining = control["remaining_qty"]
+        baseline_actual = max(0.0, float(row["baseline_actual_qty"] or 0))
+        actual_to_date = conn.execute(
+            """
+            SELECT COALESCE(SUM(quantity), 0)
+            FROM activity_daily_actual
+            WHERE activity_id=? AND source='MANUAL' AND actual_date<=?
+            """,
+            (activity_id, as_of.isoformat()),
+        ).fetchone()[0]
+        remaining = max(
+            0.0,
+            float(row["quantity"] or 0) - baseline_actual - float(actual_to_date or 0),
+        )
         observed_finish = _observed_finish(conn, row, remaining, as_of, holidays)
         baseline_start = normalize_workday(baseline_start, holidays) if baseline_start else None
         baseline_finish = normalize_workday(baseline_finish, holidays, -1) if baseline_finish else None
