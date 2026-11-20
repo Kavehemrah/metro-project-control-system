@@ -255,3 +255,77 @@ def test_activity_record_dialog_groups_fields_into_clear_sections():
 
     dialog.close()
     assert app is not None
+
+
+
+def test_activity_workspace_shows_dated_histories_in_separate_tabs(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db_path = tmp_path / "activity-workspace.db"
+    conn = db_connect(db_path)
+    conn.execute(
+        "INSERT INTO project(id,name,contract_value) VALUES(1,'Workspace test',100000)"
+    )
+    activity_id = conn.execute(
+        """
+        INSERT INTO activity(
+            project_id,row_no,position,zone,title,unit,quantity,remaining_qty,
+            start_date,finish_date,source
+        ) VALUES(1,7,'تونل ۴','خط شرقی','بتن‌ریزی اسلب','مترمکعب',100,100,
+                 '2026-10-01','2026-10-10','MANUAL')
+        """
+    ).lastrowid
+    conn.execute(
+        "INSERT INTO activity_daily_plan(activity_id,plan_date,quantity,source) "
+        "VALUES(?,'2026-10-02',10,'MANUAL')",
+        (activity_id,),
+    )
+    conn.execute(
+        "INSERT INTO activity_daily_actual(activity_id,actual_date,quantity,source,notes) "
+        "VALUES(?,'2026-10-03',8,'MANUAL','بتن‌ریزی جبهه شرقی')",
+        (activity_id,),
+    )
+    conn.execute(
+        "INSERT INTO cost_entry(project_id,activity_id,period,category,amount,source) "
+        "VALUES(1,?,'مهر 1405','بودجه هزینه',5000,'MANUAL')",
+        (activity_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO actual_finance_entry(
+            project_id,activity_id,entry_date,period,entry_type,category,amount,source
+        ) VALUES(1,?,'2026-10-04','مهر 1405','COST','هزینه حمل',700,'MANUAL')
+        """,
+        (activity_id,),
+    )
+    conn.execute(
+        "INSERT INTO revenue_entry(project_id,activity_id,period,category,amount,source) "
+        "VALUES(1,?,'مهر 1405','درآمد مبنا',12000,'MANUAL')",
+        (activity_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO actual_finance_entry(
+            project_id,activity_id,entry_date,period,entry_type,category,amount,source
+        ) VALUES(1,?,'2026-10-05','مهر 1405','REVENUE','درآمد ثبت‌شده',900,'MANUAL')
+        """,
+        (activity_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(modules, "connect", lambda: db_connect(db_path))
+    dialog = modules.ActivityWorkspaceDialog(activity_id, project_id=1)
+
+    assert dialog.tabs.count() == 4
+    assert [dialog.tabs.tabText(i) for i in range(4)] == [
+        "برنامه اجرایی", "عملکرد روزانه", "هزینه", "درآمد"
+    ]
+    assert dialog.tab_specs["برنامه اجرایی"]["table"].rowCount() == 1
+    assert dialog.tab_specs["عملکرد روزانه"]["table"].rowCount() == 1
+    assert dialog.tab_specs["هزینه"]["table"].rowCount() == 2
+    assert dialog.tab_specs["درآمد"]["table"].rowCount() == 2
+    assert "مبلغ مبنا/تخصیص‌یافته: 5,000" in dialog.tab_specs["هزینه"]["summary"].text()
+    assert "هزینه واقعی ثبت‌شده: 700" in dialog.tab_specs["هزینه"]["summary"].text()
+
+    dialog.close()
+    assert app is not None
