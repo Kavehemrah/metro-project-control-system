@@ -61,7 +61,8 @@ def finish_date(start, duration_days: int, holidays: Iterable = ()) -> date:
     duration = int(duration_days)
     if duration < 1:
         raise ValueError("duration_days must be at least 1")
-    return shift_days(start, duration - 1, holidays)
+    first_day = normalize_workday(start, holidays, 1)
+    return shift_days(first_day, duration - 1, holidays)
 
 
 def day_index(anchor, target, holidays: Iterable = ()) -> int:
