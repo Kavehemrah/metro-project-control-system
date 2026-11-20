@@ -6,6 +6,7 @@ from scheduled time only when it is registered in calendar_holiday.
 from __future__ import annotations
 
 from app.services.work_calendar import (
+    count_scheduled_days,
     day_index,
     finish_date,
     normalize_workday,
@@ -43,14 +44,19 @@ def analyze_critical_path(
         activity_id = raw.get("id")
         if activity_id is None:
             raise ValueError("each activity must have an id")
-        duration = int(raw.get("duration_days") or 1)
+        start_date = parse_date(raw.get("start_date"))
+        finish_date_value = parse_date(raw.get("finish_date"))
+        if start_date is not None and finish_date_value is not None:
+            duration = count_scheduled_days(start_date, finish_date_value, holidays)
+        else:
+            duration = int(raw.get("duration_days") or 1)
         if duration < 1:
             raise ValueError("duration_days must be at least 1")
         items[activity_id] = {
             "id": activity_id,
             "title": raw.get("title") or str(activity_id),
             "duration_days": duration,
-            "start_date": parse_date(raw.get("start_date")),
+            "start_date": start_date,
         }
     if not items:
         return {
