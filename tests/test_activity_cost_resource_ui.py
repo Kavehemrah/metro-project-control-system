@@ -425,3 +425,97 @@ def test_activity_row_click_opens_correct_workspace_and_shows_daily_finance_tota
 
     page.close()
     assert app is not None
+
+
+def test_activity_workspace_allows_editing_and_deleting_excel_history(monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QDialog, QMessageBox
+
+    app = QApplication.instance() or QApplication([])
+    db_path = tmp_path / "activity-workspace-excel-edit.db"
+    conn = db_connect(db_path)
+    conn.execute("INSERT INTO project(id,name) VALUES(1,'Excel edit test')")
+    activity_id = conn.execute(
+        """
+        INSERT INTO activity(project_id,row_no,position,zone,title,unit,quantity,source)
+        VALUES(1,1,'تونل ۴','خط شرقی','بتن‌ریزی اسلب','مترمکعب',100,'EXCEL')
+        """
+    ).lastrowid
+    period_id = conn.execute(
+        """
+        INSERT INTO activity_period(
+            activity_id,period,planned_qty,actual_qty,cumulative_qty,remaining_qty,achievement_pct,source
+        ) VALUES(?,'مهر 1405',10,8,8,92,80,'EXCEL')
+        """,
+        (activity_id,),
+    ).lastrowid
+    cost_id = conn.execute(
+        """
+        INSERT INTO cost_entry(project_id,activity_id,period,category,amount,source)
+        VALUES(1,?,'مهر 1405','هزینه حمل',5000,'EXCEL')
+        """,
+        (activity_id,),
+    ).lastrowid
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(modules, "connect", lambda: db_connect(db_path))
+    dialog = modules.ActivityWorkspaceDialog(activity_id, project_id=1)
+
+    class AcceptedRecordDialog:
+        def __init__(self, title, fields, initial=None, parent=None):
+            self.title = title
+            self.initial = initial or {}
+
+        def exec(self):
+            return QDialog.Accepted
+
+        def values(self):
+            if "planned_qty" in self.initial:
+                return {"planned_qty": 14, "actual_qty": 13}
+            return {"period": "آبان 1405", "category": "هزینه اصلاح‌شده", "amount": 6500}
+
+    monkeypatch.setattr(modules, "RecordDialog", AcceptedRecordDialog)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+
+    daily_spec = dialog.tab_specs["عملکرد روزانه"]
+    daily_table = daily_spec["table"]
+    assert daily_table.rowCount() == 1
+    daily_table.selectRow(0)
+    assert daily_table.item(0, 0).data(modules.Qt.UserRole + 1) == "EXCEL_PERIOD"
+    dialog._edit_daily(daily_spec)
+
+    conn = db_connect(db_path)
+    edited_period = conn.execute(
+        "SELECT planned_qty,actual_qty FROM activity_period WHERE id=?", (period_id,)
+    ).fetchone()
+    conn.close()
+    assert tuple(edited_period) == (14, 13)
+
+    cost_spec = dialog.tab_specs["هزینه"]
+    cost_table = cost_spec["table"]
+    excel_row = next(
+        row for row in range(cost_table.rowCount())
+        if cost_table.item(row, 0).data(modules.Qt.UserRole + 2) == "cost_entry"
+    )
+    cost_table.selectRow(excel_row)
+    assert cost_table.item(excel_row, 0).data(modules.Qt.UserRole + 1) == "EXCEL"
+    dialog._edit_finance(cost_spec)
+
+    conn = db_connect(db_path)
+    edited_cost = conn.execute(
+        "SELECT period,category,amount FROM cost_entry WHERE id=?", (cost_id,)
+    ).fetchone()
+    conn.close()
+    assert tuple(edited_cost) == ("آبان 1405", "هزینه اصلاح‌شده", 6500)
+
+    daily_table.selectRow(0)
+    dialog._delete_daily(daily_spec)
+    cost_table.selectRow(0)
+    dialog._delete_finance(cost_spec)
+
+    conn = db_connect(db_path)
+    assert conn.execute("SELECT 1 FROM activity_period WHERE id=?", (period_id,)).fetchone() is None
+    assert conn.execute("SELECT 1 FROM cost_entry WHERE id=?", (cost_id,)).fetchone() is None
+    conn.close()
+    dialog.close()
+    assert app is not None
