@@ -17,11 +17,15 @@ from app.services.work_calendar import (
 
 def shift_working_days(start, offset, working_weekdays=None, holidays=()):
     """Backward-compatible name; only explicitly registered holidays are skipped."""
+    if working_weekdays is not None:
+        raise ValueError("weekday calendars are not supported; register project holidays instead")
     return shift_days(start, offset, holidays)
 
 
 def working_finish(start, duration_days, working_weekdays=None, holidays=()):
     """Backward-compatible name for inclusive finish-date calculation."""
+    if working_weekdays is not None:
+        raise ValueError("weekday calendars are not supported; register project holidays instead")
     return finish_date(start, duration_days, holidays)
 
 
@@ -38,6 +42,8 @@ def analyze_critical_path(
     weekdays are otherwise treated identically. Activity finish dates are
     inclusive. FS+0 starts on the next scheduled day.
     """
+    if working_weekdays is not None:
+        raise ValueError("weekday calendars are not supported; register project holidays instead")
     holidays = tuple(holidays)
     items = {}
     for raw in activities:
