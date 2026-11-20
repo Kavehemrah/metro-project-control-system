@@ -447,7 +447,7 @@ class ActivityPage(RecordPage):
             return
         critical = [item for item in result["activities"] if item["critical"]]
         lines = [
-            f"مدت کل محاسباتی پروژه: {result['project_duration_workdays']} روز کاری",
+            f"مدت کل محاسباتی پروژه: {result['project_duration_days']} روز برنامه‌ای",
             f"تعداد فعالیت‌های بحرانی: {len(critical)}",
             "",
         ]
@@ -457,8 +457,8 @@ class ActivityPage(RecordPage):
             lines.append(f"{item['title']} | شروع: {start} | پایان: {finish}")
         lines.extend([
             "",
-            f"تقویم کاری: شنبه تا پنج‌شنبه؛ جمعه تعطیل. تعطیلات ثبت‌شده: {len(holidays)} روز.",
-            "این تحلیل مستقل است و تاریخ‌های پیش‌بینی فعلی برنامه را تغییر نمی‌دهد.",
+            f"تقویم پروژه: فقط تعطیلات ثبت‌شده از زمان برنامه خارج‌اند؛ تعداد تعطیلات ثبت‌شده: {len(holidays)} روز.",
+            "این تحلیل و پیش‌بینی فعالیت‌ها از تقویم تعطیلات یکسان استفاده می‌کنند.",
         ])
         QMessageBox.information(self, "تحلیل مسیر بحرانی", "\n".join(lines))
 
@@ -649,13 +649,14 @@ class ActivityPage(RecordPage):
 
     def manage_holidays(self):
         dialog = QDialog(self)
-        dialog.setWindowTitle("مدیریت تعطیلات تقویم کاری")
+        dialog.setWindowTitle("مدیریت تعطیلات پروژه")
         dialog.setLayoutDirection(Qt.RightToLeft)
         dialog.resize(720, 460)
         root = QVBoxLayout(dialog)
         note = QLabel(
-            "تاریخ را شمسی وارد کنید. تعطیلات ثبت‌شده فقط در تحلیل مسیر بحرانی اثر دارند؛ "
-            "موتور پیش‌بینی تقویمی فعلی تغییر نمی‌کند."
+            "تاریخ را شمسی وارد کنید. فقط روزهای ثبت‌شده در این فهرست از زمان‌بندی، "
+            "وقفه روابط، پیش‌بینی پایان و محاسبه برنامه روزانه کنار گذاشته می‌شوند. "
+            "هیچ روز هفته‌ای به‌صورت خودکار تعطیل نیست. عملکرد واقعی ثبت‌شده حذف نمی‌شود."
         )
         note.setWordWrap(True)
         root.addWidget(note)
@@ -873,7 +874,7 @@ class ActivityPage(RecordPage):
                     self.schedule_notice.setText("خطا: وابستگی فعالیت‌ها چرخه دارد؛ تاریخ‌های پیش‌بینی به‌روزرسانی نشدند. فعالیت‌ها: " + "، ".join(schedule.get("cycle_titles", [])))
                 else:
                     delayed = sum(1 for item in schedule["activities"] if item["delay_days"] > 0)
-                    self.schedule_notice.setText(f"موتور زمان‌بندی: {schedule['updated']} فعالیت بررسی شد؛ {delayed} فعالیت دارای تأخیر پیش‌بینی‌شده است. محاسبات بر مبنای روز تقویمی هستند.")
+                    self.schedule_notice.setText(f"موتور زمان‌بندی: {schedule['updated']} فعالیت بررسی شد؛ {delayed} فعالیت دارای تأخیر پیش‌بینی‌شده است. محاسبات بر مبنای روزهای برنامه‌ای هستند؛ تعطیلات ثبت‌شده از زمان‌بندی کنار گذاشته می‌شوند.")
 
             self.table.setRowCount(len(self.records))
             for row_index, record in enumerate(self.records):
