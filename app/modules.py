@@ -372,9 +372,15 @@ class ActivityPage(RecordPage):
             self.daily_plan_button.clicked.connect(self.manage_daily_plan)
             self.layout().itemAt(2).layout().addWidget(self.daily_plan_button)
         if progress_only:
-            self.add_button.setText("ثبت عملکرد روزانه")
+            self.add_button.setText("ثبت برای فعالیت انتخاب‌شده")
             self.edit_button.setText("ویرایش عملکرد روزانه")
             self.delete_button.setText("حذف عملکرد روزانه")
+            self.quick_actual_button = QPushButton("ثبت سریع عملکرد")
+            self.quick_actual_button.setToolTip(
+                "ثبت عملکرد بدون نیاز به انتخاب قبلی فعالیت از جدول"
+            )
+            self.quick_actual_button.clicked.connect(self.record_actual_quick)
+            self.layout().itemAt(2).layout().insertWidget(0, self.quick_actual_button)
         else:
             self.add_button.setText("افزودن فعالیت")
             self.edit_button.setText("ویرایش فعالیت")
@@ -1289,6 +1295,138 @@ class ActivityPage(RecordPage):
         finally:
             conn.close()
         self.refresh()
+
+    def record_actual_quick(self):
+        """Guided daily actual entry: choose the activity inside the form."""
+        conn = connect()
+        try:
+            activities = conn.execute(
+                """
+                SELECT id,row_no,title,position,zone,unit,quantity,remaining_qty,
+                       baseline_actual_qty
+                FROM activity
+                WHERE project_id=?
+                ORDER BY row_no, position, zone, title, id
+                """,
+                (self.project_id,),
+            ).fetchall()
+            choices = []
+            for item in activities:
+                row_label = f"{item['row_no']} - " if item["row_no"] is not None else ""
+                location = " / ".join(
+                    part for part in (item["position"], item["zone"]) if part
+                )
+                suffix = f" | {location}" if location else ""
+                choices.append((
+                    int(item["id"]),
+                    f"{row_label}{item['title'] or 'فعالیت بدون عنوان'}{suffix} "
+                    f"[{item['unit'] or 'بدون واحد'}]",
+                ))
+        finally:
+            conn.close()
+
+        if not choices:
+            QMessageBox.information(
+                self, "ثبت عملکرد", "برای این پروژه هنوز فعالیتی تعریف نشده است."
+            )
+            return
+
+        fields = [
+            ("activity_id", "فعالیت", "activity", {"choices": choices}),
+            ("actual_date", "تاریخ عملکرد", "date", {
+                "default": format_date(date.today().isoformat())
+            }),
+            ("quantity", "مقدار عملکرد", "number", {
+                "minimum": 0.01, "decimals": 2
+            }),
+            ("notes", "توضیحات / محل دقیق اجرا", "text", {}),
+        ]
+        dialog = RecordDialog("ثبت سریع عملکرد روزانه", fields, parent=self)
+        dialog.resize(560, 260)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        values = dialog.values()
+        if values["activity_id"] is None or not values["actual_date"]:
+            QMessageBox.warning(
+                self, "ورودی ناقص", "انتخاب فعالیت و ثبت تاریخ عملکرد الزامی است."
+            )
+            return
+        try:
+            actual_date = normalize_date(values["actual_date"])
+        except ValueError as error:
+            QMessageBox.warning(self, "تاریخ نامعتبر", str(error))
+            return
+
+        conn = connect()
+        try:
+            activity = conn.execute(
+                """
+                SELECT id,title,unit,quantity FROM activity
+                WHERE id=? AND project_id=?
+                """,
+                (values["activity_id"], self.project_id),
+            ).fetchone()
+            if activity is None:
+                QMessageBox.warning(self, "فعالیت نامعتبر", "فعالیت انتخاب‌شده دیگر در پروژه موجود نیست.")
+                return
+            duplicate = conn.execute(
+                """
+                SELECT source FROM activity_daily_actual
+                WHERE activity_id=? AND actual_date=?
+                """,
+                (activity["id"], actual_date),
+            ).fetchone()
+            if duplicate is not None:
+                source_label = "Excel" if duplicate["source"] != "MANUAL" else "دستی"
+                QMessageBox.warning(
+                    self,
+                    "رکورد تکراری",
+                    f"برای این فعالیت در تاریخ انتخاب‌شده عملکرد {source_label} وجود دارد. "
+                    "برای اصلاح، از «ویرایش عملکرد روزانه» استفاده کنید.",
+                )
+                return
+            control = activity_control(conn, activity["id"])
+            proposed_total = control["cumulative_actual_qty"] + values["quantity"]
+            if proposed_total > float(activity["quantity"] or 0):
+                answer = QMessageBox.question(
+                    self,
+                    "هشدار مقدار عملکرد",
+                    f"با این ثبت، عملکرد تجمعی از حجم کل فعالیت بیشتر می‌شود.\n"
+                    f"حجم کل: {float(activity['quantity'] or 0):,.2f} {activity['unit'] or ''}\n"
+                    f"عملکرد تجمعی پس از ثبت: {proposed_total:,.2f}\n"
+                    "آیا با وجود اضافه‌کار/مقدار مازاد، ثبت ادامه یابد؟",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    return
+            conn.execute(
+                """
+                INSERT INTO activity_daily_actual(
+                    activity_id,actual_date,quantity,source,notes
+                ) VALUES(?,?,?,'MANUAL',?)
+                """,
+                (activity["id"], actual_date, values["quantity"], values["notes"]),
+            )
+            update_activity_rollup(conn, activity["id"])
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            QMessageBox.warning(
+                self, "ثبت ناموفق",
+                "برای این فعالیت در این تاریخ رکورد دیگری ثبت شده است.",
+            )
+            return
+        finally:
+            conn.close()
+
+        self.refresh()
+        QMessageBox.information(
+            self,
+            "عملکرد ثبت شد",
+            f"{activity['title']} | {format_date(actual_date)} | "
+            f"{values['quantity']:,.2f} {activity['unit'] or ''}",
+        )
 
     def add_record(self):
         if self.progress_only:
