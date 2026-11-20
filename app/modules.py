@@ -1757,6 +1757,14 @@ class ActivityPage(RecordPage):
                     "SELECT MAX(actual_date) FROM activity_daily_actual WHERE activity_id=?",
                     (record["id"],),
                 ).fetchone()[0]
+                latest_period = conn.execute(
+                    "SELECT period FROM activity_period WHERE activity_id=? AND source='EXCEL' "
+                    "AND COALESCE(actual_qty,0)>0 ORDER BY period DESC LIMIT 1",
+                    (record["id"],),
+                ).fetchone()
+                latest_actual_display = format_date(latest_actual) if latest_actual else (
+                    latest_period["period"] if latest_period else None
+                )
                 actual_cost_total = conn.execute(
                     """
                     SELECT COALESCE(SUM(amount),0) FROM actual_finance_entry
@@ -1776,9 +1784,16 @@ class ActivityPage(RecordPage):
                     "SELECT COALESCE(SUM(quantity),0) FROM activity_daily_actual WHERE activity_id=?",
                     (record["id"],),
                 ).fetchone()[0]
+                imported_period_actual = conn.execute(
+                    "SELECT COALESCE(SUM(actual_qty),0) FROM activity_period "
+                    "WHERE activity_id=? AND source='EXCEL'",
+                    (record["id"],),
+                ).fetchone()[0]
                 activity_quantity = max(0.0, float(record["quantity"] or 0))
                 unit_rate = float(revenue_budget or 0) / activity_quantity if activity_quantity else 0.0
-                calculated_revenue_total = float(daily_actual_total or 0) * unit_rate
+                calculated_revenue_total = (
+                    float(daily_actual_total or 0) + float(imported_period_actual or 0)
+                ) * unit_rate
                 display_values = [
                     record["row_no"],
                     record["position"],
@@ -1795,7 +1810,7 @@ class ActivityPage(RecordPage):
                     f"{control['physical_progress_pct']:.1f}%",
                     format_date(record["forecast_finish"]),
                     f"{record['delay_days'] or 0} روز",
-                    format_date(latest_actual),
+                    latest_actual_display or "—",
                     f"{float(actual_cost_total or 0):,.0f}",
                     f"{calculated_revenue_total:,.0f}",
                 ]
