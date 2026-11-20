@@ -36,6 +36,11 @@ from .services.control import activity_control, update_activity_rollup
 from .services.dates import format_date, normalize_date
 from .services.forecast import calculate_schedule, forecast_finance
 from .services.schedule_analysis import analyze_critical_path
+from .services.schedule_baseline import (
+    compare_schedule_to_baseline,
+    create_schedule_baseline,
+    list_schedule_baselines,
+)
 from .services.work_calendar import count_scheduled_days, project_holidays
 from .services.actual_finance import activity_cost_coverage, finance_performance, record_actual
 from .services.activity_costs import (
@@ -356,6 +361,12 @@ class ActivityPage(RecordPage):
         self.holiday_button = QPushButton("مدیریت تعطیلات")
         self.holiday_button.clicked.connect(self.manage_holidays)
         self.layout().itemAt(2).layout().addWidget(self.holiday_button)
+        self.baseline_button = QPushButton("ثبت خط مبنای مصوب")
+        self.baseline_button.clicked.connect(self.capture_schedule_baseline)
+        self.layout().itemAt(2).layout().addWidget(self.baseline_button)
+        self.baseline_compare_button = QPushButton("مقایسه با خط مبنا")
+        self.baseline_compare_button.clicked.connect(self.show_baseline_comparison)
+        self.layout().itemAt(2).layout().addWidget(self.baseline_compare_button)
         if not progress_only:
             self.daily_plan_button = QPushButton("مدیریت برنامه روزانه")
             self.daily_plan_button.clicked.connect(self.manage_daily_plan)
@@ -462,6 +473,120 @@ class ActivityPage(RecordPage):
             "این تحلیل و پیش‌بینی فعالیت‌ها از تقویم تعطیلات یکسان استفاده می‌کنند.",
         ])
         QMessageBox.information(self, "تحلیل مسیر بحرانی", "\n".join(lines))
+
+    def capture_schedule_baseline(self):
+        name, accepted = QInputDialog.getText(
+            self,
+            "ثبت خط مبنای برنامه",
+            "نام نسخه مصوب:",
+            QLineEdit.Normal,
+            f"خط مبنای مصوب - {date.today().isoformat()}",
+        )
+        if not accepted:
+            return
+        conn = connect()
+        try:
+            schedule = calculate_schedule(conn, project_id=self.project_id, persist=False)
+            if schedule.get("cycle"):
+                QMessageBox.warning(
+                    self,
+                    "خطای برنامه",
+                    "به علت وجود چرخه در روابط پیش‌نیازی، خط مبنا ثبت نشد. ابتدا روابط فعالیت‌ها را اصلاح کنید.",
+                )
+                return
+            baseline_id = create_schedule_baseline(
+                conn,
+                project_id=self.project_id,
+                name=name,
+                notes="ثبت از صفحه برنامه عملیاتی",
+            )
+            conn.commit()
+        except (ValueError, sqlite3.Error) as error:
+            conn.rollback()
+            QMessageBox.warning(self, "ثبت خط مبنا ناموفق", str(error))
+            return
+        finally:
+            conn.close()
+        QMessageBox.information(
+            self,
+            "خط مبنا ثبت شد",
+            f"نسخه «{name.strip()}» با شناسه {baseline_id} ثبت شد. "
+            "این نسخه تاریخی است و با تغییر برنامه جاری بازنویسی نمی‌شود.",
+        )
+
+    def show_baseline_comparison(self):
+        conn = connect()
+        try:
+            baselines = list_schedule_baselines(conn, self.project_id)
+            if not baselines:
+                QMessageBox.information(
+                    self,
+                    "مقایسه برنامه",
+                    "هنوز خط مبنایی ثبت نشده است. ابتدا نسخه مصوب برنامه را ثبت کنید.",
+                )
+                return
+            labels = [
+                f"{item['name']} | {item['created_at']} | {item['activity_count']} فعالیت"
+                for item in baselines
+            ]
+            selected, accepted = QInputDialog.getItem(
+                self, "انتخاب خط مبنا", "نسخه مورد مقایسه:", labels, 0, False
+            )
+            if not accepted:
+                return
+            index = labels.index(selected)
+            comparison = compare_schedule_to_baseline(
+                conn, baselines[index]["id"], as_of=date.today()
+            )
+        finally:
+            conn.close()
+
+        if comparison.get("cycle"):
+            QMessageBox.warning(
+                self,
+                "خطای تحلیل",
+                "در روابط جاری فعالیت‌ها چرخه وجود دارد؛ مقایسه قابل انجام نیست.",
+            )
+            return
+
+        variance = comparison.get("project_finish_variance_calendar_days")
+        if variance is None:
+            variance_text = "نامشخص"
+        elif variance > 0:
+            variance_text = f"{variance} روز تقویمی دیرتر"
+        elif variance < 0:
+            variance_text = f"{abs(variance)} روز تقویمی زودتر"
+        else:
+            variance_text = "بدون انحراف تاریخ پایان"
+
+        lines = [
+            f"خط مبنا: {comparison['baseline_name']}",
+            f"پایان خط مبنا: {format_date(comparison['baseline_project_finish']) if comparison['baseline_project_finish'] else '—'}",
+            f"پایان پیش‌بینی: {format_date(comparison['forecast_project_finish']) if comparison['forecast_project_finish'] else '—'}",
+            f"انحراف پایان پروژه: {variance_text}",
+            "",
+            "فعالیت‌های دارای تأخیر نسبت به خط مبنا:",
+        ]
+        delayed = [
+            item for item in comparison["activities"]
+            if item["finish_variance_calendar_days"] is not None
+            and item["finish_variance_calendar_days"] > 0
+        ]
+        delayed.sort(key=lambda item: item["finish_variance_calendar_days"], reverse=True)
+        if not delayed:
+            lines.append("موردی شناسایی نشد.")
+        for item in delayed[:12]:
+            row_label = item["row_no"] if item["row_no"] is not None else item["activity_id"]
+            lines.append(
+                f"ردیف {row_label} - {item['title']}: "
+                f"{item['finish_variance_calendar_days']} روز تقویمی تأخیر"
+            )
+        lines.extend([
+            "",
+            "مبنای انحراف فعالیت‌ها در این گزارش، اختلاف تاریخ پایان پیش‌بینی با پایان خط مبنا بر حسب روز تقویمی است؛ "
+            "این شاخص با تأخیر روز برنامه‌ای و شناوری مسیر بحرانی یکسان نیست.",
+        ])
+        QMessageBox.information(self, "مقایسه با خط مبنا", "\n".join(lines))
 
     def manage_daily_plan(self):
         activity = self._selected_record()
