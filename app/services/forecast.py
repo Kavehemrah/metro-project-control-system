@@ -14,7 +14,7 @@ from datetime import date, timedelta
 from app.services.control import activity_control, forecast_finish
 from app.services.dates import normalize_date
 from app.services.activity_costs import activity_cost_budgets
-from app.services.work_calendar import day_index, finish_date, normalize_workday, project_holidays, shift_days
+from app.services.work_calendar import count_scheduled_days, day_index, finish_date, normalize_workday, project_holidays, shift_days
 
 
 def _as_date(value) -> date | None:
@@ -29,14 +29,14 @@ def _as_date(value) -> date | None:
             return None
 
 
-def _activity_duration(row) -> int:
-    duration = int(row["duration_days"] or 0)
-    if duration > 0:
-        return duration
+def _activity_duration(row, holidays=()) -> int:
     start = _as_date(row["start_date"])
     finish = _as_date(row["finish_date"])
     if start and finish and finish >= start:
-        return (finish - start).days + 1
+        return count_scheduled_days(start, finish, holidays)
+    duration = int(row["duration_days"] or 0)
+    if duration > 0:
+        return duration
     quantity = max(0.0, float(row["quantity"] or 0))
     target = max(0.0, float(row["daily_target"] or 0))
     return max(1, math.ceil(quantity / target)) if target else 1
@@ -163,7 +163,7 @@ def calculate_schedule(
         row = activities[activity_id]
         baseline_start = _as_date(row["start_date"])
         baseline_finish = _as_date(row["finish_date"])
-        duration = _activity_duration(row)
+        duration = _activity_duration(row, holidays)
         control = activity_control(conn, activity_id)
         remaining = control["remaining_qty"]
         observed_finish = _observed_finish(conn, row, remaining, as_of, holidays)
