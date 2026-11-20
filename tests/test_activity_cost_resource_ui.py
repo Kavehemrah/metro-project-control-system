@@ -455,6 +455,13 @@ def test_activity_workspace_allows_editing_and_deleting_excel_history(monkeypatc
         """,
         (activity_id,),
     ).lastrowid
+    daily_excel_id = conn.execute(
+        """
+        INSERT INTO activity_daily_actual(activity_id,actual_date,quantity,source,notes)
+        VALUES(?,'2026-10-04',6,'EXCEL','عملکرد روزانه واردشده از Excel')
+        """,
+        (activity_id,),
+    ).lastrowid
     conn.commit()
     conn.close()
 
@@ -472,6 +479,12 @@ def test_activity_workspace_allows_editing_and_deleting_excel_history(monkeypatc
         def values(self):
             if "planned_qty" in self.initial:
                 return {"planned_qty": 14, "actual_qty": 13}
+            if "actual_date" in self.initial:
+                return {
+                    "actual_date": "2026-10-06",
+                    "quantity": 9,
+                    "notes": "عملکرد روزانه اصلاح‌شده",
+                }
             return {"period": "آبان 1405", "category": "هزینه اصلاح‌شده", "amount": 6500}
 
     monkeypatch.setattr(modules, "RecordDialog", AcceptedRecordDialog)
@@ -479,9 +492,12 @@ def test_activity_workspace_allows_editing_and_deleting_excel_history(monkeypatc
 
     daily_spec = dialog.tab_specs["عملکرد روزانه"]
     daily_table = daily_spec["table"]
-    assert daily_table.rowCount() == 1
-    daily_table.selectRow(0)
-    assert daily_table.item(0, 0).data(modules.Qt.UserRole + 1) == "EXCEL_PERIOD"
+    assert daily_table.rowCount() == 2
+    period_row = next(
+        row for row in range(daily_table.rowCount())
+        if daily_table.item(row, 0).data(modules.Qt.UserRole + 1) == "EXCEL_PERIOD"
+    )
+    daily_table.selectRow(period_row)
     dialog._edit_daily(daily_spec)
 
     conn = db_connect(db_path)
@@ -490,6 +506,23 @@ def test_activity_workspace_allows_editing_and_deleting_excel_history(monkeypatc
     ).fetchone()
     conn.close()
     assert tuple(edited_period) == (14, 13)
+
+    excel_daily_row = next(
+        row for row in range(daily_table.rowCount())
+        if daily_table.item(row, 0).data(modules.Qt.UserRole + 1) == "EXCEL"
+    )
+    daily_table.selectRow(excel_daily_row)
+    dialog._edit_daily(daily_spec)
+
+    conn = db_connect(db_path)
+    edited_daily = conn.execute(
+        "SELECT actual_date,quantity,source,notes FROM activity_daily_actual WHERE id=?",
+        (daily_excel_id,),
+    ).fetchone()
+    conn.close()
+    assert tuple(edited_daily) == (
+        "2026-10-06", 9, "EXCEL", "عملکرد روزانه اصلاح‌شده"
+    )
 
     cost_spec = dialog.tab_specs["هزینه"]
     cost_table = cost_spec["table"]
@@ -508,13 +541,24 @@ def test_activity_workspace_allows_editing_and_deleting_excel_history(monkeypatc
     conn.close()
     assert tuple(edited_cost) == ("آبان 1405", "هزینه اصلاح‌شده", 6500)
 
-    daily_table.selectRow(0)
+    period_row = next(
+        row for row in range(daily_table.rowCount())
+        if daily_table.item(row, 0).data(modules.Qt.UserRole + 1) == "EXCEL_PERIOD"
+    )
+    daily_table.selectRow(period_row)
+    dialog._delete_daily(daily_spec)
+    excel_daily_row = next(
+        row for row in range(daily_table.rowCount())
+        if daily_table.item(row, 0).data(modules.Qt.UserRole + 1) == "EXCEL"
+    )
+    daily_table.selectRow(excel_daily_row)
     dialog._delete_daily(daily_spec)
     cost_table.selectRow(0)
     dialog._delete_finance(cost_spec)
 
     conn = db_connect(db_path)
     assert conn.execute("SELECT 1 FROM activity_period WHERE id=?", (period_id,)).fetchone() is None
+    assert conn.execute("SELECT 1 FROM activity_daily_actual WHERE id=?", (daily_excel_id,)).fetchone() is None
     assert conn.execute("SELECT 1 FROM cost_entry WHERE id=?", (cost_id,)).fetchone() is None
     conn.close()
     dialog.close()
