@@ -411,8 +411,8 @@ class ActivityWorkspaceDialog(QDialog):
         self_finance_note.setStyleSheet(f"color:{MUTED};")
         if entry_type == "REVENUE":
             self_finance_note.setText(
-                "درآمد هر روز از مقدار عملکرد همان روز × نرخ واحد درآمد فعالیت محاسبه می‌شود. "
-                "مبلغ درآمد دستی ثبت نمی‌شود و ردیف‌های مرجع Excel فقط‌خواندنی‌اند."
+                "محاسبه درآمد در سربرگ عملکرد روزانه انجام می‌شود. این بخش فقط گزارش درآمد روزانه و تجمعی را "
+                "نمایش می‌دهد؛ سوابق قدیمی و مبالغ مبنای تخصیص در این گزارش تکرار نمی‌شوند."
             )
         layout.addWidget(self_finance_note)
         summary = QLabel()
@@ -1839,16 +1839,9 @@ class ActivityPage(RecordPage):
                     "SELECT COALESCE(SUM(quantity),0) FROM activity_daily_actual WHERE activity_id=?",
                     (record["id"],),
                 ).fetchone()[0]
-                imported_period_actual = conn.execute(
-                    "SELECT COALESCE(SUM(actual_qty),0) FROM activity_period "
-                    "WHERE activity_id=? AND source='EXCEL'",
-                    (record["id"],),
-                ).fetchone()[0]
                 activity_quantity = max(0.0, float(record["quantity"] or 0))
                 unit_rate = float(revenue_budget or 0) / activity_quantity if activity_quantity else 0.0
-                calculated_revenue_total = (
-                    float(daily_actual_total or 0) + float(imported_period_actual or 0)
-                ) * unit_rate
+                calculated_revenue_total = float(daily_actual_total or 0) * unit_rate
                 display_values = [
                     record["row_no"],
                     record["position"],
