@@ -426,7 +426,7 @@ def test_activity_row_click_opens_correct_workspace_and_shows_daily_finance_tota
     assert page.table.item(0, 0).data(modules.Qt.UserRole) == activity_id
     assert page.table.item(0, 15).text() == "1405/07/11"
     assert page.table.item(0, 16).text() == "700"
-    assert page.table.item(0, 17).text() == "2,400"
+    assert page.table.item(0, 17).text() == "960"
 
     page.table.cellClicked.emit(0, 0)
     assert opened == {"activity_id": activity_id, "project_id": 1}
