@@ -342,14 +342,22 @@ def test_activity_workspace_shows_dated_histories_in_separate_tabs(monkeypatch, 
     assert any("واقعی MANUAL" in value for value in cost_sources)
     assert "مبلغ مبنای هزینه: 5,000" in dialog.tab_specs["هزینه"]["summary"].text()
     assert "هزینه واقعی ثبت‌شده: 700" in dialog.tab_specs["هزینه"]["summary"].text()
-    assert revenue_table.rowCount() == 4
-    revenue_sources = [revenue_table.item(row, 3).text() for row in range(revenue_table.rowCount())]
-    assert "محاسباتی - روزانه" in revenue_sources
-    assert "محاسباتی - دوره‌ای" in revenue_sources
-    assert any("مبنای درآمد / تخصیص MANUAL" in value for value in revenue_sources)
-    assert any("ثبت درآمد قبلی MANUAL" in value for value in revenue_sources)
-    assert "درآمد محاسبه‌شده از عملکردهای قبلی و روزانه: 2,400" in dialog.tab_specs["درآمد"]["summary"].text()
+    assert revenue_table.rowCount() == 1
+    assert revenue_table.item(0, 0).text() == "1405/07/11"
+    assert revenue_table.item(0, 1).text() == "960"
+    assert revenue_table.item(0, 2).text() == "960"
+    assert daily_table.item(
+        next(row for row in range(daily_table.rowCount()) if daily_table.item(row, 3).text() == "MANUAL"),
+        4,
+    ).text() == "960"
+    assert "درآمد کل بازه انتخاب‌شده: 960" in dialog.tab_specs["درآمد"]["summary"].text()
     assert revenue_table.isEnabled()
+    filters = dialog.tab_specs["درآمد"]["filters"]
+    filters["date_from"].setText("1405/07/12")
+    dialog._apply_revenue_filter("درآمد")
+    assert revenue_table.rowCount() == 0
+    dialog._clear_revenue_filter("درآمد")
+    assert revenue_table.rowCount() == 1
 
     dialog.close()
     assert app is not None
@@ -462,6 +470,13 @@ def test_activity_workspace_allows_editing_and_deleting_excel_history(monkeypatc
         """,
         (activity_id,),
     ).lastrowid
+    conn.execute(
+        """
+        INSERT INTO revenue_entry(project_id,activity_id,period,category,amount,source)
+        VALUES(1,?,'کل پروژه','درآمد مبنا',10000,'EXCEL_ACTIVITY')
+        """,
+        (activity_id,),
+    )
     conn.commit()
     conn.close()
 
@@ -523,6 +538,9 @@ def test_activity_workspace_allows_editing_and_deleting_excel_history(monkeypatc
     assert tuple(edited_daily) == (
         "2026-10-06", 9, "EXCEL", "عملکرد روزانه اصلاح‌شده"
     )
+    revenue_table = dialog.tab_specs["درآمد"]["table"]
+    assert revenue_table.rowCount() == 1
+    assert revenue_table.item(0, 1).text() == "900"
 
     cost_spec = dialog.tab_specs["هزینه"]
     cost_table = cost_spec["table"]
@@ -561,5 +579,7 @@ def test_activity_workspace_allows_editing_and_deleting_excel_history(monkeypatc
     assert conn.execute("SELECT 1 FROM activity_daily_actual WHERE id=?", (daily_excel_id,)).fetchone() is None
     assert conn.execute("SELECT 1 FROM cost_entry WHERE id=?", (cost_id,)).fetchone() is None
     conn.close()
+    assert revenue_table.rowCount() == 0
+    assert "درآمد کل بازه انتخاب‌شده: 0" in dialog.tab_specs["درآمد"]["summary"].text()
     dialog.close()
     assert app is not None
