@@ -353,12 +353,13 @@ class ActivityWorkspaceDialog(QDialog):
         self.tabs.setDocumentMode(True)
         root.addWidget(self.tabs, 1)
         self.tab_specs = {}
+        self._daily_revenue_rows = []
         self._make_tab(
             "عملکرد روزانه", "activity_daily_actual", "actual_date",
             [("actual_date", "تاریخ عملکرد", "date", {}),
              ("quantity", "مقدار عملکرد", "number", {"minimum": 0.01, "decimals": 2}),
              ("notes", "توضیحات / محل اجرا", "text", {})],
-            ["تاریخ", "مقدار عملکرد", "توضیحات", "منبع"], "عملکرد روزانه",
+            ["تاریخ", "مقدار عملکرد", "توضیحات", "منبع", "درآمد روزانه (ریال)"], "عملکرد روزانه",
         )
         self._make_finance_tab("هزینه", "COST")
         self._make_finance_tab("درآمد", "REVENUE")
@@ -417,8 +418,31 @@ class ActivityWorkspaceDialog(QDialog):
         summary = QLabel()
         summary.setStyleSheet(f"color:{BLUE};font-weight:600;")
         layout.addWidget(summary)
-        table = QTableWidget()
-        _configure_table(table, ["تاریخ / دوره", "شرح", "مبلغ (ریال)", "نوع منبع", "توضیحات"])
+        filters = None
+        if entry_type == "REVENUE":
+            filter_row = QHBoxLayout()
+            date_from = QLineEdit()
+            date_from.setPlaceholderText("از تاریخ (شمسی)")
+            date_to = QLineEdit()
+            date_to.setPlaceholderText("تا تاریخ (شمسی)")
+            apply_filter = QPushButton("اعمال فیلتر")
+            clear_filter = QPushButton("حذف فیلتر")
+            for widget in (date_from, date_to, apply_filter, clear_filter):
+                filter_row.addWidget(widget)
+            layout.addLayout(filter_row)
+            filters = {
+                "date_from": date_from, "date_to": date_to,
+                "apply": apply_filter, "clear": clear_filter,
+            }
+            _configure_table(
+                table := QTableWidget(),
+                ["تاریخ", "درآمد روزانه (ریال)", "درآمد تجمعی (ریال)"],
+            )
+            apply_filter.clicked.connect(lambda _checked=False, s=title: self._apply_revenue_filter(s))
+            clear_filter.clicked.connect(lambda _checked=False, s=title: self._clear_revenue_filter(s))
+        else:
+            table = QTableWidget()
+            _configure_table(table, ["تاریخ / دوره", "شرح", "مبلغ (ریال)", "نوع منبع", "توضیحات"])
         layout.addWidget(table, 1)
         actions = QHBoxLayout()
         add = QPushButton(f"افزودن {title}")
@@ -430,9 +454,11 @@ class ActivityWorkspaceDialog(QDialog):
         layout.addLayout(actions)
         if entry_type == "REVENUE":
             add.hide()
+            edit.hide()
+            delete.hide()
         spec = {
             "table": table, "entry_type": entry_type, "summary": summary,
-            "kind": "finance", "title": title,
+            "kind": "finance", "title": title, "filters": filters,
         }
         self.tab_specs[title] = spec
         add.clicked.connect(lambda _checked=False, s=spec: self._add_finance(s))
@@ -488,125 +514,51 @@ class ActivityWorkspaceDialog(QDialog):
                             + f" FROM {spec['table_name']} WHERE activity_id=? ORDER BY {spec['date_column']},id",
                             (self.activity_id,),
                         ).fetchall()
+                    revenue_budget = conn.execute(
+                        """
+                        SELECT COALESCE(SUM(amount),0) FROM revenue_entry
+                        WHERE project_id=? AND activity_id=?
+                          AND source IN ('EXCEL_ACTIVITY','MANUAL')
+                        """,
+                        (self.project_id, self.activity_id),
+                    ).fetchone()[0]
+                    activity_quantity = max(0.0, float(a["quantity"] or 0))
+                    unit_rate = float(revenue_budget or 0) / activity_quantity if activity_quantity else 0.0
                     table = spec["table"]
                     table.setRowCount(len(rows))
+                    self._daily_revenue_rows = []
+                    cumulative_revenue = 0.0
                     for ri, row in enumerate(rows):
                         record_source = row["source"] or ""
                         record_date = str(row["record_date"] or "") if record_source == "EXCEL_PERIOD" else format_date(row["record_date"])
                         source_label = "Excel - عملکرد دوره‌ای" if record_source == "EXCEL_PERIOD" else record_source
-                        values = [record_date, f"{float(row['quantity'] or 0):,.2f}"]
+                        quantity = max(0.0, float(row["quantity"] or 0))
+                        daily_revenue = quantity * unit_rate if record_source != "EXCEL_PERIOD" else None
+                        values = [record_date, f"{quantity:,.2f}"]
                         if spec["table_name"] == "activity_daily_actual":
                             values.append(row["notes"] or "")
                         values.append(source_label)
+                        values.append(f"{daily_revenue:,.0f}" if daily_revenue is not None else "—")
                         for ci, value in enumerate(values):
                             item = QTableWidgetItem(str(value))
                             if ci == 0:
                                 item.setData(Qt.UserRole, int(row["id"]))
                                 item.setData(Qt.UserRole + 1, record_source)
                             table.setItem(ri, ci, item)
+                        if daily_revenue is not None:
+                            cumulative_revenue += daily_revenue
+                            self._daily_revenue_rows.append({
+                                "iso_date": str(row["record_date"] or ""),
+                                "date": record_date,
+                                "daily": daily_revenue,
+                                "cumulative": cumulative_revenue,
+                            })
                     table.resizeColumnsToContents()
                 else:
                     entry_type = spec["entry_type"]
                     if entry_type == "REVENUE":
-                        budget_rows = conn.execute(
-                            """
-                            SELECT id,period AS record_date,category,amount,source,'' AS notes
-                            FROM revenue_entry
-                            WHERE project_id=? AND activity_id=?
-                              AND source IN ('EXCEL_ACTIVITY','MANUAL')
-                            ORDER BY period,id
-                            """,
-                            (self.project_id, self.activity_id),
-                        ).fetchall()
-                        budget_total = sum(float(row["amount"] or 0) for row in budget_rows)
-                        total_qty = max(0.0, float(a["quantity"] or 0))
-                        unit_rate = budget_total / total_qty if total_qty > 0 else 0.0
-                        period_rows = conn.execute(
-                            """
-                            SELECT id,period AS record_date,actual_qty AS quantity
-                            FROM activity_period
-                            WHERE activity_id=? AND source='EXCEL' AND COALESCE(actual_qty,0)>0
-                            ORDER BY period,id
-                            """,
-                            (self.activity_id,),
-                        ).fetchall()
-                        daily_rows = conn.execute(
-                            """
-                            SELECT id,actual_date AS record_date,quantity,source,notes
-                            FROM activity_daily_actual WHERE activity_id=?
-                            ORDER BY actual_date,id
-                            """,
-                            (self.activity_id,),
-                        ).fetchall()
-                        legacy_revenue_rows = conn.execute(
-                            """
-                            SELECT id,entry_date AS record_date,category,amount,source,notes
-                            FROM actual_finance_entry
-                            WHERE project_id=? AND activity_id=? AND entry_type='REVENUE'
-                            ORDER BY entry_date,id
-                            """,
-                            (self.project_id, self.activity_id),
-                        ).fetchall()
-                        display_rows = []
-                        calculated_total = 0.0
-                        for row in period_rows:
-                            amount = max(0.0, float(row["quantity"] or 0)) * unit_rate
-                            calculated_total += amount
-                            display_rows.append((
-                                str(row["record_date"] or ""),
-                                "درآمد محاسبه‌شده از عملکرد دوره‌ای Excel",
-                                amount, "محاسباتی - دوره‌ای",
-                                f"مقدار دوره: {float(row['quantity'] or 0):,.2f} × نرخ واحد: {unit_rate:,.2f}",
-                                None, None, None,
-                            ))
-                        for row in daily_rows:
-                            amount = max(0.0, float(row["quantity"] or 0)) * unit_rate
-                            calculated_total += amount
-                            display_rows.append((
-                                format_date(row["record_date"]),
-                                row["notes"] or "درآمد محاسبه‌شده از عملکرد روزانه",
-                                amount, "محاسباتی - روزانه",
-                                f"مقدار روز: {float(row['quantity'] or 0):,.2f} × نرخ واحد: {unit_rate:,.2f}",
-                                None, None, None,
-                            ))
-                        # Legacy manual revenue entries remain visible for audit, but are not
-                        # mixed into the new calculated-revenue total.
-                        for row in legacy_revenue_rows:
-                            display_rows.append((
-                                format_date(row["record_date"]), row["category"] or "",
-                                float(row["amount"] or 0),
-                                "ثبت درآمد قبلی " + (row["source"] or ""),
-                                row["notes"] or "رکورد قدیمی؛ در محاسبه درآمد خودکار لحاظ نشده است",
-                                "actual_finance_entry", int(row["id"]), row["source"] or "",
-                            ))
-                        # Imported revenue rows are the allocation basis, not earned revenue.
-                        for row in budget_rows:
-                            display_rows.append((
-                                str(row["record_date"] or ""), row["category"] or "",
-                                float(row["amount"] or 0),
-                                "مبنای درآمد / تخصیص " + (row["source"] or ""),
-                                "مبلغ مبنا؛ درآمد تحقق‌یافته نیست",
-                                "revenue_entry", int(row["id"]), row["source"] or "",
-                            ))
-                        display_rows.sort(key=lambda row: (row[0], row[3]))
-                        table = spec["table"]
-                        table.setRowCount(len(display_rows))
-                        for ri, values in enumerate(display_rows):
-                            for ci, value in enumerate(values[:5]):
-                                item = QTableWidgetItem(str(value))
-                                if ci == 0 and values[5]:
-                                    item.setData(Qt.UserRole, values[6])
-                                    item.setData(Qt.UserRole + 1, values[7])
-                                    item.setData(Qt.UserRole + 2, values[5])
-                                table.setItem(ri, ci, item)
-                        spec["summary"].setText(
-                            f"مبنای درآمد تخصیص‌یافته: {budget_total:,.0f} ریال  |  "
-                            f"نرخ محاسباتی: {unit_rate:,.2f} ریال  |  "
-                            f"درآمد محاسبه‌شده از عملکردهای قبلی و روزانه: {calculated_total:,.0f} ریال"
-                        )
-                        table.resizeColumnsToContents()
+                        self._refresh_revenue_report(spec)
                         continue
-
                     if entry_type == "COST":
                         budget_row = conn.execute(
                             """
@@ -706,6 +658,56 @@ class ActivityWorkspaceDialog(QDialog):
                     table.resizeColumnsToContents()
         finally:
             conn.close()
+
+    def _refresh_revenue_report(self, spec):
+        filters = spec.get("filters") or {}
+        start_text = filters.get("date_from").text().strip() if filters else ""
+        end_text = filters.get("date_to").text().strip() if filters else ""
+        try:
+            start_date = normalize_date(start_text) if start_text else None
+            end_date = normalize_date(end_text) if end_text else None
+        except ValueError:
+            QMessageBox.warning(self, "تاریخ نامعتبر", "تاریخ فیلتر را به‌صورت شمسی معتبر وارد کنید.")
+            return
+        if start_date and end_date and start_date > end_date:
+            QMessageBox.warning(self, "بازه نامعتبر", "تاریخ شروع فیلتر نباید بعد از تاریخ پایان باشد.")
+            return
+
+        all_rows = self._daily_revenue_rows
+        filtered = [
+            row for row in all_rows
+            if (start_date is None or row["iso_date"] >= start_date)
+            and (end_date is None or row["iso_date"] <= end_date)
+        ]
+        table = spec["table"]
+        table.setRowCount(len(filtered))
+        for index, row in enumerate(filtered):
+            values = [row["date"], f"{row['daily']:,.0f}", f"{row['cumulative']:,.0f}"]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                table.setItem(index, column, item)
+        selected_total = sum(row["daily"] for row in filtered)
+        cumulative_total = filtered[-1]["cumulative"] if filtered else 0.0
+        spec["summary"].setText(
+            f"درآمد کل بازه انتخاب‌شده: {selected_total:,.0f} ریال  |  "
+            f"درآمد تجمعی تا پایان بازه: {cumulative_total:,.0f} ریال"
+        )
+        table.resizeColumnsToContents()
+
+    def _apply_revenue_filter(self, title):
+        spec = self.tab_specs.get(title)
+        if spec:
+            self._refresh_revenue_report(spec)
+
+    def _clear_revenue_filter(self, title):
+        spec = self.tab_specs.get(title)
+        if not spec:
+            return
+        filters = spec.get("filters") or {}
+        filters["date_from"].clear()
+        filters["date_to"].clear()
+        self._refresh_revenue_report(spec)
 
     def _selected_row(self, spec):
         row = spec["table"].currentRow()
