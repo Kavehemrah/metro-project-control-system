@@ -434,8 +434,9 @@ class ActivityWorkspaceDialog(QDialog):
                 "date_from": date_from, "date_to": date_to,
                 "apply": apply_filter, "clear": clear_filter,
             }
+            table = QTableWidget()
             _configure_table(
-                table := QTableWidget(),
+                table,
                 ["تاریخ", "درآمد روزانه (ریال)", "درآمد تجمعی (ریال)"],
             )
             apply_filter.clicked.connect(lambda _checked=False, s=title: self._apply_revenue_filter(s))
